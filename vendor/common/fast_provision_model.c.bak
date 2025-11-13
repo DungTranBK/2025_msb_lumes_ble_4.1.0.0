@@ -1,0 +1,704 @@
+/********************************************************************************************************
+ * @file     vendor_model.c
+ *
+ * @brief    for TLSR chips
+ *
+ * @author	 telink
+ * @date     Sep. 30, 2010
+ *
+ * @par      Copyright (c) 2010, Telink Semiconductor (Shanghai) Co., Ltd.
+ *           All rights reserved.
+ *
+ *			 The information contained herein is confidential and proprietary property of Telink
+ * 		     Semiconductor (Shanghai) Co., Ltd. and is available under the terms
+ *			 of Commercial License Agreement between Telink Semiconductor (Shanghai)
+ *			 Co., Ltd. and the licensee in separate contract or the terms described here-in.
+ *           This heading MUST NOT be removed from this file.
+ *
+ * 			 Licensees are granted free, non-transferable use of the information in this
+ *			 file under Mutual Non-Disclosure Agreement. NO WARRENTY of ANY KIND is provided.
+ *
+ *******************************************************************************************************/
+#include "../../proj/tl_common.h"
+#if !WIN32
+#include "../../proj/mcu/watchdog_i.h"
+#endif 
+#include "../../proj_lib/ble/ll/ll.h"
+#include "../../proj_lib/ble/blt_config.h"
+#include "../../vendor/common/user_config.h"
+#include "app_health.h"
+#include "../../proj_lib/sig_mesh/app_mesh.h"
+#include "fast_provision_model.h"
+#include "generic_model.h"
+#include "version.h"
+#include "vendor/mesh/user/default_network.h"
+
+#include "../mesh/user/debug.h"
+#ifdef  FAST_PROVISION_DBG_EN
+#define DBG_FAST_PROVISION_SEND_STR(x)   Dbg_sendString((s8*)x)
+#define DBG_FAST_PROVISION_SEND_INT(x)   Dbg_sendInt(x)
+#define DBG_FAST_PROVISION_SEND_HEX(x)   Dbg_sendHex(x)
+#define DBG_FAST_PROVISION_SEND_BYTE(x)  Dbg_sendOneByteHex(x)
+#else
+#define DBG_FAST_PROVISION_SEND_STR(x)
+#define DBG_FAST_PROVISION_SEND_INT(x)
+#define DBG_FAST_PROVISION_SEND_HEX(x)
+#define DBG_FAST_PROVISION_SEND_BYTE(x)
+#endif
+
+/******************************************************************************/
+/*                              PRIVATE DATA                                  */
+/******************************************************************************/
+
+#define FAST_PROVISION_TIMEOUT 		120*1000*1000
+#if FAST_PROVISION_ENABLE
+//----------------------fast provision proc---------------------------
+fast_prov_par_t fast_prov;
+mesh_cb_fun_par_t cb_para;
+u32 get_mac_time = 0, delay_time = 0;
+const u8 mac_header[] = {  \
+		0x04, 0x95, 0xF1, 0x48 , 0x15 , 0xC7 , 0x53 , 0x7B , 0xC9 , 0x0F  \
+	};
+static u8 en_fast_revert_network = 0;
+
+int cb_vd_mesh_get_addr_st_rsp(mesh_cb_fun_par_t *cb_par);
+#endif
+
+/******************************************************************************/
+/*                          PRIVATE FUNCTIONS DECLERATION                     */
+/******************************************************************************/
+
+/******************************************************************************/
+/*                               ALL FUNCTIONS                                */
+/******************************************************************************/
+
+void mesh_gatt_adv_beacon_enable(u8 enable){
+	#if !WIN32
+	beacon_send.en = enable;
+	gatt_adv_send_flag = enable;
+	#endif
+}
+
+void mesh_revert_network()
+{
+	node_need_store_misc = 1;
+	if(provision_mag.gatt_mode == GATT_PROVISION_MODE){
+		#if FAST_PROVISION_ENABLE
+		if((!fast_prov.not_need_prov)&&(mesh_fast_prov_sts_get() == FAST_PROV_COMPLETE)){
+			if(join_new_net_check()){
+				node_info_backup_t mesh_info_backup;
+				flash_read_page(FLASH_ADR_NODE_INFO_BACKUP, sizeof(node_info_backup_t), (u8*) &mesh_info_backup);
+				if(!memcmp(fast_prov.net_info.pro_data.net_work_key, mesh_info_backup.net_info_backup.net_work_key, 16)) {  // Netkey
+					DBG_FAST_PROVISION_SEND_STR("\n SAME NETWORK, NOT NEED PROV!");
+					goto not_bind;
+				}
+			}
+			mesh_provision_par_set(&fast_prov.net_info.pro_data);
+			//set app_key
+			mesh_set_start_wait_add_appkey_msg_after_set_node_info(FALSE);
+			mesh_appkey_set_t *p_set = (mesh_appkey_set_t *)&fast_prov.net_info.appkey_set;
+			u8 err = mesh_app_key_set(APPKEY_ADD, p_set->appkey, GET_APPKEY_INDEX(p_set->net_app_idx), GET_NETKEY_INDEX(p_set->net_app_idx), 1);
+
+			if(err == 0){
+				u16 appkey_idx = 0;
+				appkey_idx = GET_APPKEY_INDEX(p_set->net_app_idx);
+				appkey_bind_all(1, appkey_idx, 1);
+				DBG_FAST_PROVISION_SEND_STR("\n DELETE BACKUP");
+				flash_erase_sector(FLASH_ADR_NODE_INFO_BACKUP);
+			}
+			if(get_all_appkey_cnt() == 1){
+			    u16 app_key_idx = GET_NETKEY_INDEX(p_set->net_app_idx);
+			    ev_handle_traversal_cps(EV_TRAVERSAL_BIND_APPKEY, (u8 *)&app_key_idx);
+			}
+			del_tmp_keys();
+			join_new_net_en(0);
+			rf_link_light_event_callback(LGT_CMD_SUC_ADD_APPKEY, DEVICE_MASK);
+		}
+		else
+		#endif
+		{
+			memset(mesh_key.net_key, 0, sizeof(mesh_key_t)-OFFSETOF(mesh_key_t,net_key));
+	        u8 node_ident_random[8];    // because it will be used in both mesh_flash_retrieve_()->mesh_net_key_set_() and mesh_provision_para_init_()
+	        prov_random_proc(node_ident_random);
+			mesh_flash_retrieve();
+			mesh_provision_para_init(node_ident_random);
+			del_tmp_keys();   // need to call before retrieve default keys
+			set_tmp_keys(1);
+			DBG_FAST_PROVISION_SEND_STR("\n REVERT PROV NOT COMPLETE");
+		}
+not_bind:
+		#if WIN32
+		App_key_bind_end_callback(MESH_APP_KEY_BIND_EVENT_SUC);
+		#endif
+		mesh_gatt_adv_beacon_enable(1);
+		mesh_node_init();
+
+		#if FAST_PROVISION_ENABLE
+		mesh_fast_prov_val_init();
+		#endif
+	}
+	else {
+		del_tmp_keys();
+	}
+}
+
+#if !(ANDROID_APP_ENABLE || IOS_APP_ENABLE)
+u8 mesh_fast_prov_get_ele_cnt_callback(u16 pid)
+{
+	u8 node_ele_cnt = 1;
+	switch(pid){
+		case LIGHT_TYPE_CT:
+			node_ele_cnt = 1;
+			break;
+		case LIGHT_TYPE_HSL:
+			node_ele_cnt = 3;
+			break;
+		case LIGHT_TYPE_XYL:
+			node_ele_cnt = 3;
+			break;
+		case LIGHT_TYPE_CT_HSL:
+			node_ele_cnt = 4;
+			break;
+		case LIGHT_TYPE_PANEL:
+			break;
+		default:
+			break;
+	}
+	return node_ele_cnt;
+}
+#endif
+
+#if (__PROJECT_MESH_PRO__ || __PROJECT_MESH_GW_NODE__)
+void mesh_fast_prov_start(u16 pid)
+{
+	fast_prov.pid = pid;
+	fast_prov.cur_sts = fast_prov.last_sts = FAST_PROV_START;
+	fast_prov.start_tick = clock_time()|1;
+	fast_prov.pending = 0;
+
+// set network info
+	fast_prov.net_info.pro_data.flags = 0;
+	memcpy(fast_prov.net_info.pro_data.iv_index, iv_idx_st.cur, 4);
+	u8 nk_array_idx = get_nk_arr_idx_first_valid();
+    u8 ak_array_idx = get_ak_arr_idx_first_valid(nk_array_idx);
+	fast_prov.net_info.pro_data.key_index = mesh_key.net_key[nk_array_idx][0].index;
+	memcpy(fast_prov.net_info.pro_data.net_work_key, mesh_key.net_key[nk_array_idx][0].key, 16);
+	fast_prov.net_info.pro_data.unicast_address = ele_adr_primary;
+	#if WIN32
+	fast_prov.prov_addr = get_win32_prov_unicast_adr();
+	#endif
+
+	u32 net_app_idx = (fast_prov.net_info.pro_data.key_index&0x0FFF) | (mesh_key.net_key[nk_array_idx][0].app_key[ak_array_idx].index<<12);
+	memcpy(fast_prov.net_info.appkey_set.net_app_idx, &net_app_idx, 3);
+	memcpy(fast_prov.net_info.appkey_set.appkey, mesh_key.net_key[nk_array_idx][0].app_key[ak_array_idx].key, 16);
+
+	cache_init(ADR_ALL_NODES);
+}
+
+#define CACHE_MAC_MAX_NUM 	32
+u8 fast_prov_w_idx = 0;
+u8 fast_prov_r_idx = 0;
+u8 fast_prov_retry_cnt  = 0;
+fast_prov_mac_st fast_prov_mac_buf[CACHE_MAC_MAX_NUM];
+
+void mesh_fast_prov_reliable_finish_handle()
+{
+#if (FAST_PROVISION_ENABLE)
+	switch(fast_prov.cur_sts){
+		case FAST_PROV_IDLE:
+			break;
+		case FAST_PROV_GET_ADDR:
+		case FAST_PROV_GET_ADDR_RETRY:
+			if(mesh_tx_reliable.mat.op == VD_MESH_ADDR_GET){
+				if(fast_prov_w_idx == 0){
+					if(fast_prov.cur_sts == FAST_PROV_GET_ADDR){
+						mesh_fast_prov_sts_set(FAST_PROV_GET_ADDR_RETRY);
+					}
+					else{
+						mesh_fast_prov_sts_set(FAST_PROV_NET_INFO);
+					}
+				}
+				else{
+					mesh_fast_prov_sts_set(FAST_PROV_SET_ADDR);
+				}
+			}
+			break;
+		case FAST_PROV_SET_ADDR:
+			if(mesh_tx_reliable.mat.op == VD_MESH_ADDR_SET){				
+				// for default address conflict, assume set addr must succcess
+				u8 device_key[16];
+				memset(device_key, 0x00, sizeof(device_key));
+				memcpy(device_key, fast_prov_mac_buf[fast_prov_r_idx-1].mac, OFFSETOF(fast_prov_mac_st,pid));
+
+				#if  (ANDROID_APP_ENABLE || IOS_APP_ENABLE)
+				mesh_fast_prov_node_info_callback(device_key, fast_prov.prov_addr, fast_prov_mac_buf[fast_prov_r_idx-1].pid);
+				#endif
+				u8 node_ele_cnt = mesh_fast_prov_get_ele_cnt_callback(fast_prov_mac_buf[fast_prov_r_idx-1].pid);
+				VC_node_dev_key_save(fast_prov.prov_addr, device_key, node_ele_cnt);
+				fast_prov.prov_addr += node_ele_cnt;
+				#if WIN32
+				set_win32_prov_unicast_adr(fast_prov.prov_addr);
+				#endif
+				if(fast_prov_r_idx == fast_prov_w_idx){
+					mesh_fast_prov_sts_set(fast_prov.last_sts);
+				}
+				else{
+					mesh_fast_prov_sts_set(FAST_PROV_SET_ADDR);// just refresh start_tick
+				}
+			}
+			break;
+		case FAST_PROV_CONFIRM:
+			if(mesh_tx_reliable.mat.op == VD_MESH_PROV_CONFIRM){
+				mesh_fast_prov_sts_set(FAST_PROV_CONFIRM_OK);
+			}
+			break;
+		default:
+			break;
+	}
+#endif
+}
+
+void mesh_fast_prov_rsp_handle(mesh_rc_rsp_t *rsp)
+{
+#if FAST_PROVISION_ENABLE
+	u16 op = rf_link_get_op_by_ac(rsp->data);
+	switch(fast_prov.cur_sts){
+		case FAST_PROV_GET_ADDR:
+		case FAST_PROV_GET_ADDR_RETRY:
+			if(op == VD_MESH_ADDR_GET_STS){
+				mesh_fast_prov_add_mac_to_buf(rsp);
+			}
+			break;
+		case FAST_PROV_CONFIRM:
+			if(op == VD_MESH_PROV_CONFIRM_STS){
+				mesh_fast_prov_sts_set(FAST_PROV_NET_INFO);
+			}
+			break;
+		default:
+			break;
+	}
+#endif
+}
+
+#if (FAST_PROVISION_ENABLE)
+void mesh_fast_prov_mac_buf_init()
+{
+	fast_prov_w_idx = 0;
+	fast_prov_r_idx = 0;
+	memset(fast_prov_mac_buf, 0x00, sizeof(fast_prov_mac_buf));
+}
+
+
+int mesh_fast_prov_add_mac_to_buf(mesh_rc_rsp_t *rsp)
+{
+	u16 op = rf_link_get_op_by_ac(rsp->data);
+	u32 size_op = SIZE_OF_OP(op);
+	foreach(i, fast_prov_w_idx){
+		if(fast_prov_mac_buf[i].default_addr == rsp->src){
+			fast_prov_mac_st *p = &fast_prov_mac_buf[fast_prov_w_idx % CACHE_MAC_MAX_NUM];
+			memcpy(p, rsp->data+size_op, OFFSETOF(fast_prov_mac_st, default_addr));
+			return 0;
+		}
+	}
+
+	if(fast_prov_w_idx < CACHE_MAC_MAX_NUM){
+		fast_prov_mac_st *p = &fast_prov_mac_buf[fast_prov_w_idx % CACHE_MAC_MAX_NUM];
+		memcpy(p, rsp->data+size_op, OFFSETOF(fast_prov_mac_st, default_addr));
+		p->default_addr = rsp->src;
+		fast_prov_w_idx++;
+	}
+		
+	return 0;	
+}
+
+u8 *mesh_fast_prov_get_mac_from_buf()
+{
+	u8 *p = 0;
+
+	if(fast_prov_r_idx < fast_prov_w_idx)
+	{
+	    p =(u8 *) &fast_prov_mac_buf[(fast_prov_r_idx % CACHE_MAC_MAX_NUM)];
+        fast_prov_r_idx++;          
+	}
+	return p;
+}
+#endif
+#endif
+
+
+#if FAST_PROVISION_ENABLE
+void mesh_device_key_set_default(){
+	memcpy(mesh_key.dev_key, tbl_mac, sizeof(tbl_mac));
+	memcpy(mesh_key.dev_key + sizeof(tbl_mac), mac_header, sizeof(mac_header));
+}
+
+void mesh_fast_prov_val_init()
+{
+	memset(&fast_prov, 0x00, sizeof(fast_prov));
+	if(is_provision_success()){
+		fast_prov.not_need_prov = 1;
+	}
+	else{
+		mesh_device_key_set_default();
+		fast_prov.get_mac_en = 1;
+	}
+}
+
+int mesh_fast_prov_sts_set(u8 sts_set)
+{
+	if(FAST_PROV_IDLE == sts_set){
+		fast_prov.start_tick = 0;
+	}
+	else{
+		fast_prov.start_tick = clock_time()|1;
+	}
+
+	if(sts_set != fast_prov.cur_sts){
+		fast_prov.last_sts = fast_prov.cur_sts;
+		fast_prov.cur_sts = sts_set;
+	}
+	return 1;
+}
+
+int mesh_fast_prov_sts_get()
+{
+	return fast_prov.cur_sts;
+}
+
+int mesh_fast_prov_rcv_op(u16 rcv_op)
+{
+	fast_prov.rcv_op = rcv_op;
+
+	return 0;
+}
+
+void mesh_fast_provision_timeout()
+{
+	if(fast_prov.start_tick && clock_time_exceed(fast_prov.start_tick,FAST_PROVISION_TIMEOUT)){
+		LOG_MSG_INFO(TL_LOG_NODE_BASIC, 0, 0,"FAST_PROV_TIME_OUT",0);
+		mesh_fast_prov_sts_set(FAST_PROV_TIME_OUT);
+		LOG_MSG_INFO(TL_LOG_NODE_SDK, 0, 0,"time out",0);
+		fast_prov.start_tick = 0;
+	}
+}
+
+void mesh_fast_prov_proc()
+{
+#ifdef FAST_PROVISION_DBG_EN
+
+	static u32 tmp_time = 0;
+	static u8 timeout = 0;
+
+	if(clock_time_exceed_ms(tmp_time, 2000))
+	{
+		DBG_FAST_PROVISION_SEND_STR("\n ___is_busy: ");
+		DBG_FAST_PROVISION_SEND_INT(is_busy_segment_flow());
+		DBG_FAST_PROVISION_SEND_STR("\n PROV: ");
+		DBG_FAST_PROVISION_SEND_INT(is_provision_success());
+		DBG_FAST_PROVISION_SEND_STR("\n CUR: ");
+		DBG_FAST_PROVISION_SEND_INT(fast_prov.cur_sts);
+
+		DBG_FAST_PROVISION_SEND_STR("\n GATT_MODE: ");
+		DBG_FAST_PROVISION_SEND_INT(provision_mag.gatt_mode);
+
+		DBG_FAST_PROVISION_SEND_STR("\n TIMEOUT: ");
+		DBG_FAST_PROVISION_SEND_INT(timeout);
+		tmp_time = clock_time_ms();
+	}
+#endif
+
+	if(is_busy_tx_segment_or_reliable_flow()
+					|| is_provision_success()){
+		return ;
+	}
+	mesh_fast_provision_timeout();
+
+	if(((mesh_fast_prov_sts_get() == FAST_PROV_COMPLETE)
+			&& clock_time_exceed(fast_prov.start_tick, fast_prov.delay*1000))
+				||(mesh_fast_prov_sts_get() == FAST_PROV_TIME_OUT)){
+
+#ifdef FAST_PROVISION_DBG_EN
+		if(mesh_fast_prov_sts_get() == FAST_PROV_TIME_OUT) {
+			timeout = 1;
+		}
+#endif
+
+		fast_prov.delay = 0;
+		mesh_adv_txrx_to_self_en(0);
+		mesh_revert_network();	
+		LOG_MSG_INFO(TL_LOG_COMMON, 0, 0,"FAST_PROV_REVERT_NETWORK",0);
+		mesh_fast_prov_sts_set(FAST_PROV_IDLE);
+		fast_prov.pending = 0;
+
+		DBG_FAST_PROVISION_SEND_STR("\n ...FAST REVERT NETWORK");
+	}
+	
+	switch(fast_prov.rcv_op) {
+		case VD_MESH_ADDR_GET:
+			if(fast_prov.cur_sts == FAST_PROV_IDLE){
+				mesh_adv_txrx_to_self_en(1);
+				mesh_fast_prov_sts_set(FAST_PROV_GET_ADDR);
+				mesh_gatt_adv_beacon_enable(0);
+				LOG_MSG_INFO(TL_LOG_NODE_SDK, 0, 0,"VD_MESH_ADDR_GET",0);
+				DBG_FAST_PROVISION_SEND_STR("\n VD_MESH_ADDR_GET");
+			}
+			if(get_mac_time && clock_time_exceed_ms(get_mac_time, delay_time)){
+				get_mac_time = 0;
+				cb_vd_mesh_get_addr_st_rsp(&cb_para);
+			}
+			break;
+		case VD_MESH_ADDR_SET:
+			if(fast_prov.cur_sts == FAST_PROV_GET_ADDR){
+				cache_init(ADR_ALL_NODES);
+				mesh_fast_prov_sts_set(FAST_PROV_SET_ADDR);
+				LOG_MSG_INFO(TL_LOG_NODE_SDK, 0, 0,"VD_MESH_ADDR_SET",0);
+				DBG_FAST_PROVISION_SEND_STR("\n FAST_PROV_GET_ADDR");
+			}
+			break;
+		case VD_MESH_PROV_DATA_SET:
+			if(fast_prov.cur_sts == FAST_PROV_SET_ADDR){				
+				mesh_fast_prov_sts_set(FAST_PROV_NET_INFO);
+				LOG_MSG_INFO(TL_LOG_NODE_SDK, 0, 0,"VD_MESH_PROV_DATA_SET",0);
+				DBG_FAST_PROVISION_SEND_STR("\n VD_MESH_PROV_DATA_SET");
+				if(en_fast_revert_network == 1) {
+					mesh_fast_prov_rcv_op(VD_MESH_PROV_COMPLETE);
+					fast_prov.delay = 0;
+					fast_prov.cur_sts = FAST_PROV_CONFIRM;
+				}
+				DBG_FAST_PROVISION_SEND_STR("\n FAST_PROV_SET_ADDR");
+			}
+			break;
+		case VD_MESH_PROV_CONFIRM:
+			if(fast_prov.cur_sts == FAST_PROV_NET_INFO){
+				mesh_fast_prov_sts_set(FAST_PROV_CONFIRM);
+				LOG_MSG_INFO(TL_LOG_NODE_SDK, 0, 0,"VD_MESH_PROV_CONFIRM",0);
+				DBG_FAST_PROVISION_SEND_STR("\n VD_MESH_PROV_CONFIRM");
+			}
+			break;
+		case VD_MESH_PROV_COMPLETE:
+			if(fast_prov.cur_sts == FAST_PROV_CONFIRM){
+				mesh_fast_prov_sts_set(FAST_PROV_COMPLETE);
+				LOG_MSG_INFO(TL_LOG_NODE_SDK, 0, 0,"VD_MESH_PROV_COMPLETE, delay:%x",fast_prov.delay);
+				DBG_FAST_PROVISION_SEND_STR("\n VD_MESH_PROV_COMPLETE");
+			}
+			break;
+		default:
+			break;
+	}
+}
+
+typedef struct {
+	u16 delay;
+	u8 time_len[2];
+}open_default_nw_t;
+
+int cb_vd_mesh_reset_network(u8 *par, int par_len, mesh_cb_fun_par_t *cb_par)
+{
+	bool enable = TRUE;
+	uint16_t time_s = OPEN_DF_NW_DEFAULT_TIME;
+
+	if(par_len == sizeof(open_default_nw_t)) {
+		open_default_nw_t *p_set = (open_default_nw_t*)par;
+		enable = (p_set->time_len[1]>>7)&0x1;
+		time_s = p_set->time_len[0]|((p_set->time_len[1]&0x7F) << 8);
+	}
+	if(enable == TRUE) {
+		set_default_network_manual(enable, time_s);
+		set_tmp_keys(1);
+		DBG_FAST_PROVISION_SEND_STR("\n ON Default network");
+	}
+	else {
+		set_default_network_manual(FALSE, 0);
+	}
+	if(!fast_prov.not_need_prov){
+		return -1;
+	}
+	fast_prov.start_tick = clock_time()|1;
+	return 0;
+}
+
+int mesh_tx_cmd_get_mac_st(u8 idx, u16 ele_adr, u16 dst_adr, u8 *uuid, model_common_t *pub_md, u16 op_rsp)
+{
+    fast_prov_mac_st rsp;
+   	memcpy(rsp.mac, tbl_mac, sizeof(rsp.mac));
+	rsp.pid = MESH_PID_SEL;
+    return mesh_tx_cmd_rsp(op_rsp, (u8 *)&rsp, sizeof(fast_prov_mac_st), ele_adr, dst_adr, uuid, pub_md);
+
+}
+
+int cb_vd_mesh_get_addr_st_rsp(mesh_cb_fun_par_t *cb_par)
+{
+    model_g_light_s_t *p_model = (model_g_light_s_t *)cb_par->model;
+    return mesh_tx_cmd_get_mac_st(cb_par->model_idx, p_model->com.ele_adr, cb_par->adr_src, 0, 0, cb_par->op_rsp);
+}
+
+int cb_vd_mesh_get_addr(u8 *par, int par_len, mesh_cb_fun_par_t *cb_par)
+{
+	DBG_FAST_PROVISION_SEND_STR("\n cb_vd_mesh_get_addr: ");
+	DBG_FAST_PROVISION_SEND_STR("not_need_prov: ");
+	DBG_FAST_PROVISION_SEND_INT(fast_prov.not_need_prov);
+	DBG_FAST_PROVISION_SEND_STR(", get_mac_en: ");
+	DBG_FAST_PROVISION_SEND_INT(fast_prov.get_mac_en);
+	DBG_FAST_PROVISION_SEND_STR(", cur_sts: ");
+	DBG_FAST_PROVISION_SEND_INT(fast_prov.cur_sts);
+
+	int err = -1;
+	if(fast_prov.not_need_prov || (!fast_prov.get_mac_en)){
+		return err;
+	}
+	if(fast_prov.cur_sts == FAST_PROV_SET_ADDR){
+		return err;
+	}
+	model_common_t *p_model = (model_common_t*) cb_par->model;
+	if(p_model->ele_adr != ele_adr_primary){
+		return err;
+	}
+	DBG_FAST_PROVISION_SEND_STR("\n PASS");
+
+	mac_addr_get_t mac_get;
+	memcpy(&mac_get, par, par_len);
+	LOG_MSG_INFO(TL_LOG_PROVISION, 0, 0, "MAC GET: %x : %x", mac_get.pid, mac_get.ele_addr);
+	if((mac_get.pid == MESH_PID_SEL) || (mac_get.pid == 0xffff)){
+		static u8 default_addr_random = 0;
+		if((par_len >= sizeof(mac_addr_get_t)) && (!default_addr_random)){//for default ele_adr_primary conflict
+			default_addr_random = 1;
+			u16 tmp_ele_addr = mac_get.ele_addr+256+(u16)clock_time()%(0x8000-256-mac_get.ele_addr);
+			tmp_ele_addr &= 0x7fff;
+			mesh_set_ele_adr_ll(tmp_ele_addr, 0, 0);
+		}
+		get_mac_time = clock_time_ms();
+		delay_time = rand()%5000;
+		cb_para = *cb_par;
+		err = 0;
+	}
+	mesh_fast_prov_rcv_op(cb_par->op);
+	
+	return err;
+}
+
+int cb_vd_mesh_set_addr(u8 *par, int par_len, mesh_cb_fun_par_t *cb_par)
+{
+	DBG_FAST_PROVISION_SEND_STR("\n cb_vd_mesh_set_addr: ");
+	int err = -1;
+	if(fast_prov.not_need_prov){
+		return err;
+	}
+	if(fast_prov.cur_sts == FAST_PROV_GET_ADDR)
+	{
+		if(!memcmp(par, tbl_mac, 6)){
+			err = cb_vd_mesh_get_addr_st_rsp(cb_par);
+			u16 addr = par[6] +(par[7]<<8);
+			if(addr&&is_unicast_adr(addr)){
+				mesh_fast_prov_rcv_op(cb_par->op);
+				mesh_set_ele_adr_ll(addr, 0, 0);
+			}
+			fast_prov.get_mac_en = 0;
+			DBG_FAST_PROVISION_SEND_STR("\n PASS");
+		}
+	}
+	return err;
+}
+
+int cb_vd_mesh_set_provision_data(u8 *par, int par_len, mesh_cb_fun_par_t *cb_par)
+{
+	DBG_FAST_PROVISION_SEND_STR("\n cb_vd_mesh_set_provision_data");
+
+	DBG_FAST_PROVISION_SEND_STR(".not_need_prov: ");
+	DBG_FAST_PROVISION_SEND_INT(fast_prov.not_need_prov);
+	DBG_FAST_PROVISION_SEND_STR(", get_mac_en: ");
+	DBG_FAST_PROVISION_SEND_INT(fast_prov.get_mac_en);
+	DBG_FAST_PROVISION_SEND_STR(", cur_sts: ");
+	DBG_FAST_PROVISION_SEND_INT(fast_prov.cur_sts);
+
+	DBG_FAST_PROVISION_SEND_STR("\n rcv_op: ");
+	DBG_FAST_PROVISION_SEND_INT(fast_prov.rcv_op);
+
+	if(fast_prov.not_need_prov){
+		return -1;
+	}
+	mesh_fast_prov_rcv_op(cb_par->op);
+//par: provision data + app_key add
+	memset(&fast_prov.net_info.pro_data, 0x00, sizeof(provison_net_info_str));
+	memcpy(&fast_prov.net_info.pro_data, par, sizeof(provison_net_info_str));
+	fast_prov.net_info.pro_data.unicast_address = ele_adr_primary;//must, provision data's dst addrs is broadcast.
+	memcpy(&fast_prov.net_info.appkey_set,par+sizeof(provison_net_info_str),sizeof(mesh_appkey_set_t));
+
+	// Check enable fast revert network
+	uint8_t normal_len =  \
+			sizeof(provison_net_info_str) + sizeof(mesh_appkey_set_t);
+	if(par_len == normal_len + 1) {
+		en_fast_revert_network =  \
+				(par[normal_len] == TRUE)?TRUE:FALSE;
+		DBG_FAST_PROVISION_SEND_STR("\n ______ ENABLE FAST REVERT NETWORK ______");
+	} else {
+		en_fast_revert_network = FALSE;
+	}
+
+	return 0;
+}
+
+int cb_vd_mesh_provision_confirm(u8 *par, int par_len, mesh_cb_fun_par_t *cb_par)
+{
+	DBG_FAST_PROVISION_SEND_STR("\n cb_vd_mesh_provision_confirm");
+	int err = -1;
+	if(fast_prov.not_need_prov){
+		return err;
+	}
+	mesh_fast_prov_rcv_op(cb_par->op);
+	if(fast_prov.cur_sts == FAST_PROV_SET_ADDR){
+		err = mesh_tx_cmd_rsp(cb_par->op_rsp, 0, 0, ele_adr_primary, cb_par->adr_src, 0, 0);
+	}
+	
+	return err;
+}
+
+int cb_vd_mesh_provision_complete(u8 *par, int par_len, mesh_cb_fun_par_t *cb_par)
+{
+	DBG_FAST_PROVISION_SEND_STR("\n cb_vd_mesh_provision_complete");
+	mesh_fast_prov_rcv_op(cb_par->op);
+	fast_prov.delay = par[0] + (par[1]<<8);
+	del_tmp_keys();
+	return 0;
+}
+
+//client
+int cb_vd_mesh_addr_sts(u8 *par, int par_len, mesh_cb_fun_par_t *cb_par)
+{
+    int err = 0;
+    if(cb_par->model){  // model may be Null for status message
+        //model_client_common_t *p_model = (model_client_common_t *)(cb_par->model);
+    }
+    return err;
+}
+
+int cb_vd_mesh_primary_addr_sts(u8 *par, int par_len, mesh_cb_fun_par_t *cb_par)
+{
+    int err = 0;
+    if(cb_par->model){  // model may be Null for status message
+        //model_client_common_t *p_model = (model_client_common_t *)(cb_par->model);
+    }
+    return err;
+}
+
+int cb_vd_mesh_provison_data_sts(u8 *par, int par_len, mesh_cb_fun_par_t *cb_par)
+{
+    int err = 0;
+    if(cb_par->model){  // model may be Null for status message
+        //model_client_common_t *p_model = (model_client_common_t *)(cb_par->model);
+    }
+    return err;
+}
+
+int cb_vd_mesh_provision_sts(u8 *par, int par_len, mesh_cb_fun_par_t *cb_par)
+{
+    int err = 0;
+    if(cb_par->model){  // model may be Null for status message
+        //model_client_common_t *p_model = (model_client_common_t *)(cb_par->model);
+    }
+    return err;
+}
+
+int is_fast_prov_mode(){
+	return fast_prov.cur_sts > FAST_PROV_IDLE ? 1 : 0;
+}
+#endif
