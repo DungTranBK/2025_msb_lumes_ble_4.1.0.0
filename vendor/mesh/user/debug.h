@@ -85,9 +85,14 @@
 //#define ENERGY_DBG_EN
 #endif
 
+#define DBG_FLOAT_EN   0
+
 void Dbg_sendString(s8 *s);
 void Dbg_sendDword(u32 data);
 void Dbg_sendInt(u16 data);
+#if DBG_FLOAT_EN
+void Dbg_sendFloat(float data);
+#endif
 void Dbg_sendHex(u16 data);
 void Dbg_sendByte(u8 data);
 void Dbg_sendOneByteHex(s8 data);

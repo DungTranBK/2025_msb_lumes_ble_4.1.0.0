@@ -27,7 +27,7 @@
 	#define DBG_BL0906_SEND_BYTE(x)    Dbg_sendOneByteHex(x)
     #define DBG_BL0906_SEND_HEX32(x)   Dbg_sendHex32(x)
     #define DBG_Bl0906_SEND_DWORD(x)   Dbg_sendDword(x)
-    #define DBG_Bl0906_SEND_FLOAT(x)   //Dbg_sendFloat(x)
+    #define DBG_Bl0906_SEND_FLOAT(x)   Dbg_sendFloat(x)
 #else
 	#define DBG_BL0906_SEND_STR(x)
 	#define DBG_BL0906_SEND_INT(x)
@@ -51,6 +51,9 @@ const float Rv = 1;
 const float Gain_v = 1;
 const float Gain_i = 16;
 const float Rl = 2;  // mOhm
+
+const float cfdiv = 16;
+const float kp = 1;
 
 static bl0906_read_cmd_t cmd_is_running = { .id_register = REG_UNKNOWN };
 static Fifo_t fifo_bl0906_cmd;
@@ -108,19 +111,18 @@ void bl_0906_set_gain(u32 gain)
  */
 void bl0906_init(typeBl0906_handle_update_energy func)
 {
-	FifoInit(&fifo_bl0906_cmd,  \
-		&buffer_bl0906_cmds, sizeof(bl0906_read_cmd_t), BL0906_BUF_CMD_SIZE);
+	FifoInit(&fifo_bl0906_cmd, &buffer_bl0906_cmds, sizeof(bl0906_read_cmd_t), BL0906_BUF_CMD_SIZE);
 	if(func != NULL) {
 		pvBl0906_handle_update_energy = func;
 	}
 	// For current correction when power on
+	current_correction_par.step = STEP_CORRECTION_READ_RMSOS;
+	current_correction_par.cmsos_bit_mask = 0;
 	current_correction_par.start_time_ms = clock_time_ms();
-	current_correction_par.is_running = true;
 	current_correction_par.retry_start_time_ms = 0;
 	foreach(i, NUMBER_RL) {
 		current_correction_par.complete_flag[i] = false;
 	}
-	bl0906_send_get_current();
 }
 
 /**
@@ -160,6 +162,7 @@ static void bl0906_bias_correction(u8 addr, float measurements, float correction
 		case RMSOS_1:
 			index = 0;
 			break;
+
 		case RMSOS_2:
 			index = 1;
 			break;
@@ -185,6 +188,7 @@ static void bl0906_bias_correction(u8 addr, float measurements, float correction
     else {
     	data[2] = (value >> 16);
     }
+
 	bl0906_write_register(addr, value);
 
 	current_correction_par.rmsos[index] = value&0x00FFFFFF;
@@ -196,24 +200,18 @@ static void bl0906_bias_correction(u8 addr, float measurements, float correction
 }
 
 /**
- * @func    bl0906_is_correction_complete_or_timeout
+ * @func    bl0906_is_correction_complete
  * @brief
  * @param
  * @retval  None
  */
-bool bl0906_is_correction_complete_or_timeout(void)
+bool bl0906_is_correction_complete(void)
 {
-	if(clock_time_exceed_ms(current_correction_par.start_time_ms, CURRENT_CORRECTION_TIMEOUT_MS)) {
+	if(current_correction_par.step == STEP_CORRECTION_IDLE) {
 		return true;
 	}
-	foreach(i, NUMBER_RL) {
-		if(current_correction_par.complete_flag[i] == false) {
-			return false;
-		}
-	}
-	return true;
+	return false;
 }
-
 
 /**
  * @func    bl0906_handle_current_rsp
@@ -245,10 +243,19 @@ static void bl0906_handle_current_rsp(u8* par, u8 par_len)
 		default:
 			return;
 	}
-	if(current_correction_par.is_running == true) {
+
+	DBG_BL0906_SEND_STR("\n*************************");
+	DBG_BL0906_SEND_STR("\n __CURRENT__:");
+	DBG_BL0906_SEND_BYTE(index);
+	DBG_BL0906_SEND_STR(", ");
+	DBG_BL0906_SEND_INT((u16)measurement_value.current);
+
+	if(current_correction_par.step == STEP_CORRECTION_PROCESS) {
 		if(current_correction_par.complete_flag[index] == false) {
 			if(measurement_value.current == 0) {
 				current_correction_par.complete_flag[index] = true;
+				DBG_BL0906_SEND_STR("\n Don't need calip: ");
+				DBG_BL0906_SEND_INT(index);
 			}
 			else {
 				if(measurement_value.current <= CURRENT_OFFSET_MA_MAX) {
@@ -258,13 +265,10 @@ static void bl0906_handle_current_rsp(u8* par, u8 par_len)
 			}
 		}
 	}
+	else {
+		DBG_BL0906_SEND_STR("\n************************* NORMAL");
+	}
 	bl0906_update_energy(TYPE_CURRENT, measurement_value.current);
-
-	DBG_BL0906_SEND_STR("\n*************************");
-	DBG_BL0906_SEND_STR("\n __CURRENT__:");
-	DBG_BL0906_SEND_BYTE(index);
-	DBG_BL0906_SEND_STR(", ");
-	DBG_BL0906_SEND_INT((u16)measurement_value.current);
 }
 
 /**
@@ -284,7 +288,6 @@ static void bl0906_handle_rmsos_rsp(u8* par, u8 par_len)
 		case RMSOS_2:
 			index = 1;
 			break;
-
 		case RMSOS_3:
 			index = 2;
 			break;
@@ -292,18 +295,37 @@ static void bl0906_handle_rmsos_rsp(u8* par, u8 par_len)
 		default:
 			return;
 	}
+	current_correction_par.cmsos_bit_mask |= (1 << index);
 
 	DBG_BL0906_SEND_STR("\n RESPONSE RMSOS: ");
 	DBG_BL0906_SEND_INT(index);
 	DBG_BL0906_SEND_STR(", ");
 	DBG_Bl0906_SEND_DWORD(rmsos);
 
-	if(current_correction_par.rmsos[index] == rmsos) {
-		current_correction_par.complete_flag[index] = true;
-		DBG_BL0906_SEND_STR("\n RMSOS set complete: ");
+	if(current_correction_par.step == STEP_CORRECTION_READ_RMSOS) {
+		if(rmsos != 0) {
+			current_correction_par.complete_flag[index] = true;
+			DBG_BL0906_SEND_STR("\n Don't need CALIP: ");
+			DBG_BL0906_SEND_INT(index);
+		}
+		if((current_correction_par.cmsos_bit_mask& \
+				BL0906_ALL_CHANNEL_BIT_MASK) == BL0906_ALL_CHANNEL_BIT_MASK) {
+			current_correction_par.step = STEP_CORRECTION_PROCESS;
+		}
+		DBG_BL0906_SEND_STR("\n *** STEP_READ_RMSOS: ");
 		DBG_BL0906_SEND_INT(index);
-		DBG_BL0906_SEND_STR(", ");
-		DBG_Bl0906_SEND_DWORD(current_correction_par.rmsos[index]);
+	}
+	else {
+
+		DBG_BL0906_SEND_STR("\n STEP_CORRECTION_PROCESS");
+
+		if(current_correction_par.rmsos[index] == rmsos) {
+			current_correction_par.complete_flag[index] = true;
+			DBG_BL0906_SEND_STR("\n RMSOS set complete: ");
+			DBG_BL0906_SEND_INT(index);
+			DBG_BL0906_SEND_STR(", ");
+			DBG_Bl0906_SEND_DWORD(current_correction_par.rmsos[index]);
+		}
 	}
 }
 
@@ -333,19 +355,53 @@ static void bl0906_handle_voltage_rsp(u8* par, u8 par_len)
  */
 static void bl0906_handle_active_power_rsp(u8* par, u8 par_len)
 {
-	s32 data = array_to_u24(par);
-	if (data < 0) {
-		DBG_BL0906_SEND_STR("\n Power Unused");
-		return;
+	u32 data = array_to_u24(par);
+	bool sign_bit = (par[2]>>7)&0x01;
+	if (sign_bit == 1) {
+		DBG_BL0906_SEND_STR("\n ***Negative Power");
+		measurement_value.active_power = 0;
 	}
-	measurement_value.active_power =
-		(float)data * Vref * Vref * (Rf + Rv) /
-			(40.4125 * Rl*Rv*Gain_i * Gain_v*1000);
+	else {
+		measurement_value.active_power =
+			(float)data * Vref * Vref * (Rf + Rv)/(40.4125 * Rl*Rv*Gain_i * Gain_v*1000);
+	}
+
+	DBG_BL0906_SEND_STR("\n POWER_REG: ");
+	DBG_BL0906_SEND_HEX32((u32)data);
+
 	bl0906_update_energy(TYPE_ACTIVE_POWER, measurement_value.active_power);
 	DBG_BL0906_SEND_STR("\n __ACTIVE_POWER__:");
 	DBG_BL0906_SEND_INT((u16)measurement_value.active_power);
 	DBG_BL0906_SEND_STR(", ");
 	DBG_Bl0906_SEND_FLOAT(measurement_value.active_power);
+}
+
+/**
+ * @func    bl0906_handle_active_energy_rsp
+ * @brief
+ * @param
+ * @retval  None
+ */
+static void bl0906_handle_active_energy_rsp(u8* par, u8 par_len)
+{
+	u32 data = array_to_u24(par);
+	if (data < 0) {
+		DBG_BL0906_SEND_STR("\n Energy Unused");
+		return;
+	}
+	float WH_PER_PULSE = (4194304 * 0.032768 * 16) / (3600000 * cfdiv  * kp);
+	measurement_value.active_energy = data * WH_PER_PULSE;
+
+	DBG_BL0906_SEND_STR("\n __ACTIVE_ENERGY__:");
+	DBG_Bl0906_SEND_DWORD(data);
+	DBG_BL0906_SEND_STR(", ");
+	DBG_BL0906_SEND_INT((u16)measurement_value.active_energy);
+
+	DBG_BL0906_SEND_STR(", ");
+	DBG_Bl0906_SEND_FLOAT(measurement_value.active_energy);
+
+	DBG_BL0906_SEND_STR(", ");
+	DBG_Bl0906_SEND_FLOAT(WH_PER_PULSE);
 }
 
 /**
@@ -356,7 +412,7 @@ static void bl0906_handle_active_power_rsp(u8* par, u8 par_len)
  */
 static void bl0906_handle_temperature_rsp(u8* par, u8 par_len)
 {
-	s32 data = (s32)array_to_u24(par) & 0x03FF;
+	u32 data = array_to_u24(par) & 0x03FF;
 	measurement_value.temperature =  \
 			(data - 64)*12.5/59-40;
 	bl0906_update_energy(TYPE_TEMPERATURE, measurement_value.temperature);
@@ -431,30 +487,44 @@ void bl0906_measurenment_start(u16 m_mask)
 static void bl0906_current_correction_proc(void)
 {
 	bool complete = true;
-	if(current_correction_par.is_running == false) {
+
+	if(current_correction_par.step == STEP_CORRECTION_IDLE) {
 		return;
 	}
 	if(clock_time_exceed_ms(current_correction_par.start_time_ms, CURRENT_CORRECTION_TIMEOUT_MS)) {
-		current_correction_par.is_running = false;
+		current_correction_par.step = STEP_CORRECTION_IDLE;
 		return;
 	}
-	foreach(i, NUMBER_RL) {
-		if(current_correction_par.complete_flag[i] == false) {
-			if(clock_time_exceed_ms(  \
-					current_correction_par.retry_start_time_ms, CURRENT_CORRECTION_RETRY_INTERVAl_MS)  \
-						|| (current_correction_par.retry_start_time_ms == 0)) {
-				current_correction_par.retry_start_time_ms = clock_time_ms();
-				if(current_correction_par.retry_start_time_ms == 0) {
-					current_correction_par.retry_start_time_ms = 1;
-				}
-				bl0906_send_get_current();
-				return;
-			}
-			complete = false;
+	if(current_correction_par.step == STEP_CORRECTION_READ_RMSOS) {
+		if(clock_time_exceed_ms(  \
+				current_correction_par.retry_start_time_ms, CURRENT_CORRECTION_RETRY_INTERVAl_MS)) {
+			DBG_BL0906_SEND_STR("\n #####################################");
+			bl0906_read_register(RMSOS_1);
+			bl0906_read_register(RMSOS_2);
+			bl0906_read_register(RMSOS_3);
+			current_correction_par.retry_start_time_ms = clock_time_ms();
 		}
 	}
-	if(complete == true) {
-		current_correction_par.is_running = false;
+	else if(current_correction_par.step == STEP_CORRECTION_PROCESS) {
+		foreach(i, NUMBER_RL) {
+			if(current_correction_par.complete_flag[i] == false) {
+				if(clock_time_exceed_ms(  \
+						current_correction_par.retry_start_time_ms, CURRENT_CORRECTION_RETRY_INTERVAl_MS)  \
+							|| (current_correction_par.retry_start_time_ms == 0)) {
+					current_correction_par.retry_start_time_ms = clock_time_ms();
+					if(current_correction_par.retry_start_time_ms == 0) {
+						current_correction_par.retry_start_time_ms = 1;
+					}
+					bl0906_send_get_current();
+					DBG_BL0906_SEND_STR("\n &&&&&&&&&&&&&&&&&&&&&&&&&&&");
+					return;
+				}
+				complete = false;
+			}
+		}
+		if(complete == true) {
+			current_correction_par.step = STEP_CORRECTION_IDLE;
+		}
 	}
 }
 
@@ -513,6 +583,12 @@ static void bl0906_fifo_proc(void)
 					case WATT_2:
 					case WATT_3:
 						cmd_is_running.p_func = bl0906_handle_active_power_rsp;
+						break;
+
+					case CF1_CNT:
+					case CF2_CNT:
+					case CF3_CNT:
+						cmd_is_running.p_func = bl0906_handle_active_energy_rsp;
 						break;
 
 					case TPS:
@@ -684,7 +760,9 @@ void bl0906_get_active_power(void)
  */
 void bl0906_get_active_energy(void)
 {
-	// bl0906_read_register(ACTIVE_ENERGY_REG);
+	bl0906_read_register(CF1_CNT);
+	bl0906_read_register(CF2_CNT);
+	bl0906_read_register(CF3_CNT);
 }
 
 /**

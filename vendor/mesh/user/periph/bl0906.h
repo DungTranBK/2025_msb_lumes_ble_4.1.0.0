@@ -12,6 +12,7 @@
 /*                              INCLUDE FILES                                 */
 /******************************************************************************/
 #include "../config_board.h"
+
 /******************************************************************************/
 /*                     EXPORTED TYPES and DEFINITIONS                         */
 /******************************************************************************/
@@ -34,6 +35,13 @@ enum {
 	WATT_4    = 0x26,
 	WATT_5    = 0x29,
 	WATT_6    = 0x2A,
+
+	CF1_CNT   = 0x30,
+	CF2_CNT   = 0x31,
+	CF3_CNT   = 0x32,
+	CF4_CNT   = 0x33,
+	CF5_CNT   = 0x36,
+	CF6_CNT   = 0x37,
 
 	TPS       = 0x5E,
 
@@ -99,15 +107,26 @@ typedef struct {
 
 #define CURRENT_CORRECTION_RETRY_INTERVAl_MS  TIMER_500MS
 
-#define CURRENT_CORRECTION_TIMEOUT_MS         (CURRENT_CORRECTION_RETRY_INTERVAl_MS*4)+100
-#define CURRENT_OFFSET_MA_MAX                 30
+#define CURRENT_CORRECTION_TIMEOUT_MS         (CURRENT_CORRECTION_RETRY_INTERVAl_MS*6)+100
+#define CURRENT_OFFSET_MA_MAX                 100
+
+
+#define BL0906_ALL_CHANNEL_BIT_MASK          0x07
+
+enum {
+	STEP_CORRECTION_READ_RMSOS,
+	STEP_CORRECTION_PROCESS,
+	STEP_CORRECTION_IDLE,
+};
+typedef u8 CorrectionStep_Enum;
 
 typedef struct {
+	CorrectionStep_Enum step;
+	u8   cmsos_bit_mask;
 	bool complete_flag[NUMBER_RL];
 	u32  rmsos[NUMBER_RL];
 	u32  start_time_ms;
 	u32  retry_start_time_ms;
-	bool is_running;
 }current_correction_par_t;
 
 
@@ -127,13 +146,12 @@ typedef struct {
 
 typedef void (*typeBl0906_handle_update_energy)(m_type_enum type, float value);
 
-
 /******************************************************************************/
 /*                             EXPORT FUNCTIONS                               */
 /******************************************************************************/
 void bl0906_init(typeBl0906_handle_update_energy func);
 void bl0906_proc(void);
-bool bl0906_is_correction_complete_or_timeout(void);
+bool bl0906_is_correction_complete(void);
 void bl0906_handle_serial_rx_message(u8* buff, u8 len);
 void bl0906_send_get_current(void);
 void bl0906_get_voltage(void);

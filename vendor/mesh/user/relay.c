@@ -460,7 +460,7 @@ void relay_check_auto_off(void)
  */
 u8 relay_proc(void)
 {
-	if(bl0906_is_correction_complete_or_timeout() == false) {
+	if(bl0906_is_correction_complete() == false) {
 		return RELAY_IDLE;
 	}
 	// map state control

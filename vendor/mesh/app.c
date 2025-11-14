@@ -1143,6 +1143,7 @@ void user_init()
     // Print device information
     info_init();
 #endif
+    sleep_ms(TIMER_500MS);
 
     // Energy
     energy_init();
