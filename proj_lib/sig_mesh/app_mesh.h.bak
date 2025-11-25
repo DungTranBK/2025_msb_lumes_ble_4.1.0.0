@@ -1172,7 +1172,7 @@ void mesh_seg_tx_set_one_pkt_completed(mesh_tx_seg_dst_type dst_type);
 #if PTS_TEST_EN
 #define FN_CACHE_SIZE_LOG           (3)		//  FN BV08 required
 #else
-#define FN_CACHE_SIZE_LOG           (2)
+#define FN_CACHE_SIZE_LOG           (4)
 #endif
 #define LPN_CACHE_OFFER_MAX         (8)
 #define FRI_ESTABLISH_REC_DELAY_MS  (100)	// must 100ms, define by spec
@@ -2085,7 +2085,7 @@ void tl_log_file(u32 level_module,u8 *pbuf,int len,char  *format,...);
 #define TL_LOG_LEVEL              TL_LOG_LEVEL_DEBUG
 	#endif
 #else
-#define TL_LOG_LEVEL              TL_LOG_LEVEL_ERROR // TL_LOG_LEVEL_INFO	// Note firmware size
+#define TL_LOG_LEVEL              TL_LOG_LEVEL_DISABLE // TL_LOG_LEVEL_INFO	// Note firmware size
 #endif
 #define MESH_KR_CFG_RETRY_MAX_CNT 	2 
 

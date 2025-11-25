@@ -447,9 +447,10 @@ typedef struct{
 }vendor_config_ttl_set_t;
 
 
-#define VD_CONFIG_NODE_RST   0x00
-#define VD_CONFIG_SET_TTL    0x01
-#define VD_CONFIG_GET_TTL    0x02
+#define VD_CONFIG_NODE_RST             0x00
+#define VD_CONFIG_SET_TTL              0x01
+#define VD_CONFIG_GET_TTL              0x02
+#define VD_CONFIG_GO_TO_CALIP_MODE     0x80
 
 
 // bind locally

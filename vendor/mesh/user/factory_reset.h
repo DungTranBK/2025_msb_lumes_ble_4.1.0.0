@@ -22,7 +22,8 @@ typedef struct{
 u8 get_reset_cnt ();
 void reset_cnt_get_idx ();
 void start_factory_reset(void);
-void setup_factory_reset_with_delay(u8 enable);
+void setup_factory_reset_with_delay(u8 enable, u8 led_blink);
 void handle_factory_reset_with_delay(void);
+void factory_force_reset_enery_and_relay_on_time(void);
 
 #endif /* FACTORY_RESET_H_ */

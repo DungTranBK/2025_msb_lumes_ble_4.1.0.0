@@ -14,7 +14,8 @@
 #include "lock_schedule.h"
 #include "led.h"
 #include "flash_user.h"
-#include "relay.h"
+#include "com.h"
+#include "energy.h"
 #include "sw_config.h"
 
 #if DEV_TYPE_SEL == G_TYPE_SWITCH_BUTTON
@@ -43,7 +44,9 @@ static const u8 msg_set_cmd_arr[]  =
 			VD_CONFIG_SW_SET_MAP_UNMAP_INPUT,
 			VD_CONFIG_SWITCH_MODE_OPT,
 			VD_CONFIG_ON_POWER_UP_STATE,
+			#if MAP_INPUT_OUTPUT_EN
 			VD_MAP_INPUT_OUTPUT_OPT,
+			#endif
 			VD_LINK_UNLINK_V2_OPT,
 			VD_EN_ON_OFF_GROUP_DEFAULT,
 		};
@@ -53,7 +56,9 @@ static const u8 msg_get_cmd_arr[]  =
 			VD_CONFIG_SW_SET_MAP_UNMAP_INPUT,
 			VD_CONFIG_SWITCH_MODE_OPT,
 			VD_CONFIG_ON_POWER_UP_STATE,
+            #if MAP_INPUT_OUTPUT_EN
 			VD_MAP_INPUT_OUTPUT_OPT,
+            #endif
 			VD_LINK_UNLINK_V2_OPT,
 			VD_EN_ON_OFF_GROUP_DEFAULT,
 		};
@@ -62,10 +67,14 @@ const u8 opcode_msg_auto_send[] =
 		{
 			VD_CONFIG_SWITCH_MODE_OPT,
 			VD_CONFIG_ON_POWER_UP_STATE,
+            #if MAP_INPUT_OUTPUT_EN
 			VD_MAP_INPUT_OUTPUT_OPT,
+            #endif
 			VD_LINK_UNLINK_V2_OPT,
 			VD_EN_ON_OFF_GROUP_DEFAULT,
 			VD_TS_LOCK_SCHEDULE,    // External file
+			VD_ACTIVE_ENERGY_INFORMATION,
+			VD_TOTAL_RELAY_ON_TIME_INFORMATION,
 		};
 
 static  sw_cfg_auto_t sw_cfg_auto_st =
@@ -229,7 +238,9 @@ void sw_config_auto_send_task(void)
         	    	break;
 				}
         	    case VD_CONFIG_ON_POWER_UP_STATE:
+#if MAP_INPUT_OUTPUT_EN
         	    case VD_MAP_INPUT_OUTPUT_OPT:
+#endif
         	    case VD_LINK_UNLINK_V2_OPT:
         	    {
         	    	sw_cfg_handle_get_message(
@@ -282,6 +293,26 @@ void sw_config_auto_send_task(void)
 					}
 					break;
 				}
+        	    case VD_ACTIVE_ENERGY_INFORMATION:
+        	    {
+        	    	u8 idx = sw_cfg_auto_st.btn_idx;
+        	    	energy_setup_publish_energy_delay(idx, 0);
+        			sw_cfg_auto_st.btn_idx++;
+					if(sw_cfg_auto_st.btn_idx >= NUMBER_RL) {
+						sw_config_next_op_index();
+					}
+        	    	break;
+        	    }
+        	    case VD_TOTAL_RELAY_ON_TIME_INFORMATION:
+        	    {
+        	    	u8 idx = sw_cfg_auto_st.btn_idx;
+        			relay_response_total_relay_on_time(idx);
+        			sw_cfg_auto_st.btn_idx++;
+					if(sw_cfg_auto_st.btn_idx >= NUMBER_RL) {
+						sw_config_next_op_index();
+					}
+        	    	break;
+        	    }
         	    default:
         	    {
         	    	DBG_SW_CONFIG_SEND_STR("\n ### DEFAULT");
@@ -481,6 +512,7 @@ static void sw_cfg_response_all_on_power_up_st_config(void)
 	DBG_SW_CONFIG_SEND_STR("\n sw_cfg_response_all_on_power_up_st_config: ");
 }
 
+#if MAP_INPUT_OUTPUT_EN
 /**
  * @func    sw_config_map_input_is_valid
  * @brief
@@ -505,6 +537,7 @@ static void sw_cfg_response_map_input_output_config(u8 model_idx)
 			 );
 	}
 }
+#endif
 
 /**
  * @func    sw_set_enable_disable_group_default
@@ -742,6 +775,7 @@ int sw_cfg_handle_set_message(int model_idx, u8* par, int par_len, u8 cmd)
 					}
 					break;
 
+#if MAP_INPUT_OUTPUT_EN
 				#if NUMBER_RL > 1
 				case VD_MAP_INPUT_OUTPUT_OPT:   // 0x2C
 				{
@@ -779,6 +813,7 @@ int sw_cfg_handle_set_message(int model_idx, u8* par, int par_len, u8 cmd)
 					break;
 				}
 				#endif
+#endif
 
 				case VD_LINK_UNLINK_V2_OPT:  // 0x2D, Link/Unlink V2
 				{
@@ -896,9 +931,11 @@ int sw_cfg_handle_get_message(int idx, u8* par, int par_len, u8 cmd)
 			sw_cfg_response_all_on_power_up_st_config();
 			break;
 
+#if MAP_INPUT_OUTPUT_EN
 		case VD_MAP_INPUT_OUTPUT_OPT:
 			sw_cfg_response_map_input_output_config(ELE_RELAY_OFFSET);
 			break;
+#endif
 
 		case VD_LINK_UNLINK_V2_OPT:
 			sw_cfg_response_link_unlink_v2(ELE_RELAY_OFFSET);

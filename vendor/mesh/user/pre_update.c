@@ -64,7 +64,7 @@ void update_handle_update_device_st_periodically(void)
 	foreach_arr(i, update_status)
 	{
 		if(clock_time_exceed_s(update_status[i].last_t_s, update_status[i].interval_t_s)){
-			send_get_device_status_manual(i);
+			// send_get_device_status_manual(i);
 			update_status[i].last_t_s = clock_time_s();
 			update_status[i].interval_t_s =   \
 					MESH_PERIODIC_PUBLISH_TIME + ((rand()% MESH_PERIODIC_PUBLISH_RANDOM_TIME));

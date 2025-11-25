@@ -10,6 +10,7 @@
 
 
 
+void Switch_handleFactPass(void);
 void Switch_handleExitFactMode(void);
 void Switch_handleFactConfirmOrActivate(uint8_t state);
 void sw_loop_100ms_interval(void);

@@ -1,3 +1,4 @@
+
 /*
  * fact.c
  *
@@ -15,9 +16,9 @@
 #include "vendor/mesh/user/config_board.h"
 #include "vendor/mesh/user/utilities.h"
 #include "vendor/mesh/user/led.h"
-#include "vendor/mesh/user/relay.h"
 #include "vendor/mesh/user/flash_user.h"
 #include "fact_handle.h"
+//#include "vendor/mesh/user/relay.h"
 #include "fact.h"
 
 #include "vendor/mesh/user/debug.h"
@@ -47,6 +48,9 @@
 /******************************************************************************/
 typeFact_handleFactEvent    pvFact_handleFactEvent    = NULL;
 typeFact_handleExitfactMode pvFact_handleExitfactMode = NULL;
+
+typeFact_handleTestStatus   pvFact_handleTestStatus = NULL;
+typeFact_handleControlRelay pvFact_handleControlRelay = NULL;
 
 /******************************************************************************/
 /*                          PRIVATE FUNCTIONS DECLERATION                     */
@@ -96,6 +100,7 @@ typedef struct {
     u32 active_timeout;
     u8  active_show_result_flag;
     bool rf_is_pass;
+    bool energy_is_pass;
     u32 active_st_tm;
 }fact_mode_par_t;
 
@@ -124,6 +129,17 @@ static int reset_cnt_flash_idx     = FLASH_INDEX_DEFAULT;
 /******************************************************************************/
 /*                               FUNCTIONS                                    */
 /******************************************************************************/
+
+/**
+ * @func    fact_set_energy_status
+ * @brief
+ * @param   None
+ * @retval  None
+ */
+void fact_set_energy_status(bool is_pass)
+{
+	fact_mode_par.energy_is_pass = is_pass;
+}
 
 /**
  * @func    fact_reset_cnt_store
@@ -335,13 +351,15 @@ static int fact_reset_cnt_check (void)
 static void fact_calculator_result(void)
 {
     u8 toggle_cnt;
-    toggle_cnt = (fact_mode_par.rf_is_pass == true)?4:1;
+    toggle_cnt = (fact_mode_par.rf_is_pass && fact_mode_par.energy_is_pass)?4:1;
     // Prepare show result
     result_par.total_cnt = toggle_cnt;
     result_par.toggle_st_time = clock_time_ms();
     result_par.state = G_ON;
     foreach(i, NUMBER_RL) {
-        relay_set_target_state(i, G_ON, SRC_DEVICE, false);
+        if(pvFact_handleControlRelay != NULL) {
+        	pvFact_handleControlRelay(i, result_par.state, SRC_DEVICE, false);
+        }
     }
     DBG_FACT_SEND_STR("\n FACT_result: ");
     DBG_FACT_SEND_INT(fact_mode_par.rf_is_pass);
@@ -366,23 +384,63 @@ static void fact_show_led_result(void)
     LedCommand_str led_cmd = COMMAND_LED_DEFAULT;
     led_cmd.ledMask = BACKUP_MASK_RL;
     // Led color
+
     if(result_par.led_st) {
         if(fact_mode_par.rf_is_pass == true)
         {
-        	led_cmd.ledMode  = LED_MODE_ON;
-        	led_cmd.ledColor = LED_COLOR_PINK;
+        	if(fact_mode_par.energy_is_pass == true) {
+            	led_cmd.ledMode  = LED_MODE_ON;
+            	led_cmd.ledColor = LED_COLOR_PINK;
+        	}
+        	else {
+            	led_cmd.ledMode  = LED_MODE_ON;
+            	led_cmd.ledColor = LED_COLOR_RED;
+        	}
         }
         else {
-        	led_cmd.ledColor = LED_COLOR_RED;
-        	led_cmd.ledMode  = LED_MODE_BLINK;
-        	led_cmd.blinkInterval = TIMER_150MS;
-        	led_cmd.lastState = LAST_STATE_COLOR_NONE;
+        	if(fact_mode_par.energy_is_pass == true) {
+            	led_cmd.ledMode  = LED_MODE_ON;
+            	led_cmd.ledColor = LED_COLOR_BLUE;
+        	}
+        	else {
+				led_cmd.ledColor = LED_COLOR_RED;
+				led_cmd.ledMode  = LED_MODE_BLINK;
+				led_cmd.blinkInterval = TIMER_150MS;
+				led_cmd.lastState = LAST_STATE_COLOR_NONE;
+        	}
         }
     }
     else {
     	led_cmd.ledMode = LED_MODE_OFF;
     }
+
     (void)led_push_led_command_to_fifo(&led_cmd);
+}
+
+/**
+ * @func   fact_callback_result_status_init
+ * @brief
+ * @param  None
+ * @retval None
+ */
+void fact_callback_result_status_init(typeFact_handleTestStatus func)
+{
+	if(func != NULL) {
+		pvFact_handleTestStatus = func;
+	}
+}
+
+/**
+ * @func   fact_callback_control_relay_init
+ * @brief
+ * @param  None
+ * @retval None
+ */
+void fact_callback_control_relay_init(typeFact_handleControlRelay func)
+{
+	if(func != NULL) {
+		pvFact_handleControlRelay = func;
+	}
 }
 
 /**
@@ -407,6 +465,9 @@ void fact_handle(void)
                 fact_mode_par.active_show_result_flag = 1;
                 // Calculator result
                 fact_calculator_result();
+                if(pvFact_handleTestStatus != NULL) {
+                	pvFact_handleTestStatus(fact_mode_par.rf_is_pass);
+                }
             }
         }
         else {
@@ -433,7 +494,9 @@ void fact_handle(void)
 							result_par.state = G_ON;
 						}
 						foreach(i, NUMBER_RL) {
-							relay_set_target_state(i, result_par.state, SRC_DEVICE, false);
+					        if(pvFact_handleControlRelay != NULL) {
+					        	pvFact_handleControlRelay(i, result_par.state, SRC_DEVICE, false);
+					        }
 						}
 					}
 					else {

@@ -47,5 +47,6 @@ extern btn_evt_t touch_btn_before_st[NUMBER_BUTTON];
 /******************************************************************************/
 void button_handle_option_btn_state(u8 idx, u8 evt);
 void button_check_clean_reset_param(void);
+void button_check_clean_default_param(void);
 
 #endif /* BUTTON_H_ */

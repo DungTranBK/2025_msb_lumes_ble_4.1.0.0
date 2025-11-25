@@ -1236,7 +1236,7 @@ void mesh_handle_reset_node_if_cannot_receive_add_ak_msg(void)
 {
 	if(wait_add_ak.f_wait == true){
 		if(clock_time_exceed_ms(wait_add_ak.start_t_ms, WAIT_TIME_ADD_AK_DEFAULT)){
-			setup_factory_reset_with_delay(true);
+			setup_factory_reset_with_delay(true, true);
 			wait_add_ak.f_wait = false;
 		}
 	}

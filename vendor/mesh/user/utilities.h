@@ -91,6 +91,7 @@ typedef uint8_t ButtonState_enum;
 #define TIMER_1S5      1500
 #define TIMER_2S       2000
 #define TIMER_3S       3000
+#define TIMER_4S       4000
 #define TIMER_5S       5000
 #define TIMER_7S       7000
 #define TIMER_9S       9000
@@ -103,6 +104,8 @@ typedef uint8_t ButtonState_enum;
 #define TIMER_90S      90000
 #define TIMER_5Min     300000
 #define TIMER_10Min    600000
+
+#define TIMER_30Min    1800000
 
 // 2IN_2OUT
 #define VD_CONFIG_SW_SET_MAIN_PARAMS         0x10
@@ -141,6 +144,10 @@ typedef uint8_t ButtonState_enum;
 #define VD_CONFIG_TIMESTAMP                  0xAC
 #define VD_TS_LOCK_SCHEDULE                  0xC8
 
+#define VD_ACTIVE_ENERGY_INFORMATION         0xEA
+#define VD_IUP_INFORMATION                   0xEB
+#define VD_TOTAL_RELAY_ON_TIME_INFORMATION   0xEC
+
 #define VD_CONFIG_LED_MASTER_CONTROL         0xF0
 
 #define VD_FACT_TEST_RF                      0xFF
@@ -150,6 +157,9 @@ typedef uint8_t ButtonState_enum;
 
 #define CONFIG_NODE_SET                      0x00
 #define CONFIG_NODE_GET                      0x01
+
+
+#define CONFIG_NODE_DELETE                   0x03
 
 #define VD_CONFIG_ALL_OPT                    VD_CONFIG_ALL_SWITCH_OPT
 

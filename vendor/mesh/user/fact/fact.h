@@ -29,6 +29,10 @@ enum {
     RESULT_UNKNOWN,
 };
 
+typedef void (*typeFact_handleControlRelay)(u8 idx, u8 st, u8 src, bool store);
+
+typedef void (*typeFact_handleTestStatus)(bool);
+
 typedef void (*typeFact_handleFactEvent)(uint8_t);
 typedef void (*typeFact_handleExitfactMode)(void);
 typedef uint8_t (*typeFact_restoreResetCnt)(void);
@@ -37,7 +41,10 @@ typedef void (*typeFact_storeResetCnt)(uint8_t);
 /******************************************************************************/
 /*                            EXPORTED FUNCTIONS                              */
 /******************************************************************************/
+void fact_set_energy_status(bool is_pass);
 void fact_init(void);
+void fact_callback_result_status_init(typeFact_handleTestStatus func);
+void fact_callback_control_relay_init(typeFact_handleControlRelay func);
 void fact_handle_evt_change_callback_init(
         typeFact_handleFactEvent func_handle_event,
         typeFact_handleExitfactMode func_exit);

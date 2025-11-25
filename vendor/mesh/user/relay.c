@@ -9,7 +9,9 @@
 #include "vendor/common/system_time.h"
 #include "vendor/common/light.h"
 #include "periph/bl0906.h"
+#include "energy.h"
 #include "fact/fact.h"
+#include "cycle_funcs.h"
 #include "flash_user.h"
 #include "utilities.h"
 #include "sw_config.h"
@@ -19,13 +21,15 @@
 
 #include "debug.h"
 #ifdef  RELAY_DBG_EN
-#define DBG_RELAY_SEND_STR(x)   Dbg_sendString((s8*)x)
-#define DBG_RELAY_SEND_INT(x)   Dbg_sendInt(x)
-#define DBG_RELAY_SEND_HEX(x)   Dbg_sendHex(x)
+#define DBG_RELAY_SEND_STR(x)    Dbg_sendString((s8*)x)
+#define DBG_RELAY_SEND_INT(x)    Dbg_sendInt(x)
+#define DBG_RELAY_SEND_HEX(x)    Dbg_sendHex(x)
+#define DBG_RELAY_SEND_DWORD(x)  Dbg_sendDword(x)
 #else
 #define DBG_RELAY_SEND_STR(x)
 #define DBG_RELAY_SEND_INT(x)
 #define DBG_RELAY_SEND_HEX(x)
+#define DBG_RELAY_SEND_DWORD(x)
 #endif
 
 typeRL_handle_relay_state_change pvRL_handle_relay_state_change = NULL;
@@ -108,20 +112,196 @@ static bool     onRelayFlag[NUMBER_RL]      = {false};
 static control_pin_t control_pin[NUMBER_RL] = CONTROL_PIN_ARR;
 static store_relay_st_delay_t store_relay_st_delay = {.enable = false};
 
+typedef struct {
+	u32  total_seconds[NUMBER_RL];
+	u32  total_seconds_stored[NUMBER_RL];
+	u32  check_start_t_ms[NUMBER_RL];
+	bool enable_calculator[NUMBER_RL];
+
+	u32  response_last_t_s[NUMBER_RL];
+	u32  interval_t_s[NUMBER_RL];
+
+}relay_on_time_par_t;
+
+static relay_on_time_par_t relay_on_time_par;
+
 static int flash_relay_state_idx = FLASH_INDEX_DEFAULT;
 
 #define BLOCK_SIZE_RELAY_STATE    sizeof(relay_para.RLS_TARGET)
 #define FLASH_SIZE_RELAY_STATE    (FLASH_SECTOR_SIZE - BLOCK_SIZE_RELAY_STATE)
+
+
+static int flash_relay_on_time_idx = FLASH_INDEX_DEFAULT;
+
+#define BLOCK_SIZE_RELAY_ON_TIME    (sizeof(u32)*NUMBER_RL)
+#define FLASH_SIZE_RELAY_ON_TIME    (FLASH_SECTOR_SIZE - BLOCK_SIZE_RELAY_ON_TIME)
+
+
+#define CHECK_RELAY_ON_TIME_INTERVAL_MS         TIMER_1Min
+#define STORE_TOTAL_RELAY_ON_TIME_INTERVAL_MS   TIMER_30Min
 
 /******************************************************************************/
 /*                        PRIVATE FUNCTIONS DECLERATION                       */
 /******************************************************************************/
 static void relay_map_set_and_target_status(void);
 static void relay_handle_switch_change_mode(u8 btn_id, u8 mode);
+static u8 relay_get_actual_state(u8 idx);
+static void relay_clean_relay_on_time(void);
 
 /******************************************************************************/
 /*                        EXPORT FUNCTIONS DECLERATION                        */
 /******************************************************************************/
+
+/**
+ * @func    relay_handle_fact_status
+ * @brief
+ * @param
+ * @retval  None
+ */
+void relay_handle_fact_status(bool is_pass)
+{
+	if(is_pass == true) {
+		relay_clean_relay_on_time();
+		energy_clean_all_active_power();
+	}
+}
+
+/**
+ * @func    relay_store_total_relay_on_time
+ * @brief
+ * @param   None
+ * @retval  None
+ */
+void relay_store_total_relay_on_time(void)
+{
+	bool need_store = false;
+	foreach(i, NUMBER_RL) {
+		if(relay_on_time_par.total_seconds[i] != relay_on_time_par.total_seconds_stored[i]) {
+			need_store = true;
+			break;
+		}
+	}
+
+	DBG_RELAY_SEND_STR("\n ...Store total relay on time: ");
+
+
+	if(need_store == true) {
+		flash_user_store(  \
+				(int*)&flash_relay_on_time_idx,
+				FLASH_ADR_RELAY_ON_TIME, FLASH_SIZE_RELAY_ON_TIME,
+				BLOCK_SIZE_RELAY_ON_TIME,(u8*)&relay_on_time_par.total_seconds \
+			);
+		foreach(i, NUMBER_RL) {
+			relay_on_time_par.total_seconds_stored[i] = relay_on_time_par.total_seconds[i];
+		}
+		DBG_RELAY_SEND_STR("1");
+	}
+}
+
+
+/**
+ * @func    relay_store_total_relay_on_time_delay
+ * @brief
+ * @param   None
+ * @retval  None
+ */
+static void relay_store_total_relay_on_time_delay(void)
+{
+	relay_store_total_relay_on_time();
+	CycleFunc_remove(relay_store_total_relay_on_time_delay);
+}
+
+/**
+ * @func    relay_response_total_relay_on_time
+ * @brief
+ * @param
+ * @retval  None
+ */
+void relay_response_total_relay_on_time(u8 idx)
+{
+	if(idx < ELE_CNT) {
+		relay_on_time_rsp_t relay_on_time_rsp;
+		relay_on_time_rsp.code = VD_TOTAL_RELAY_ON_TIME_INFORMATION;
+		relay_on_time_rsp.on_time = (u32)relay_on_time_par.total_seconds[idx];
+		mesh_tx_cmd_rsp(
+				VD_CONFIG_NODE_STATUS,
+				(u8 *)&relay_on_time_rsp,
+				sizeof(relay_on_time_rsp_t),
+				ele_adr_primary + idx + ELE_RELAY_OFFSET,
+				GATEWAY_UNICAST_ADDR,
+				0,
+				0
+			);
+		// Save after updating results
+		relay_store_total_relay_on_time();
+	}
+}
+
+
+/**
+ * @func    relay_handle_delete_relay_on_time
+ * @brief
+ * @param   None
+ * @retval  None
+ */
+void relay_handle_delete_relay_on_time(u8 idx)
+{
+	if(idx < NUMBER_RL) {
+		relay_on_time_par.total_seconds[idx] = 0;
+		relay_store_total_relay_on_time();
+		relay_response_total_relay_on_time(idx);
+	}
+}
+
+/**
+ * @func    relay_restore_relay_on_time
+ * @brief
+ * @param   None
+ * @retval  None
+ */
+static void relay_restore_total_relay_on_time(void)
+{
+	flash_user_get_flash_index(  \
+			(int*)&flash_relay_on_time_idx, FLASH_ADR_RELAY_ON_TIME, \
+			FLASH_SIZE_RELAY_ON_TIME, BLOCK_SIZE_RELAY_ON_TIME, (u8*)&relay_on_time_par.total_seconds \
+		);
+	flash_user_restore(
+			flash_relay_on_time_idx, FLASH_ADR_RELAY_ON_TIME, BLOCK_SIZE_RELAY_ON_TIME,(u8*)&relay_on_time_par.total_seconds
+		);
+	foreach(i, NUMBER_RL) {
+		if(relay_on_time_par.total_seconds[i] == MAX_U32) {
+			relay_on_time_par.total_seconds[i] = 0;
+		}
+		relay_on_time_par.total_seconds_stored[i] = relay_on_time_par.total_seconds[i];
+	}
+
+
+	DBG_RELAY_SEND_STR("\n ...Restore total relay on time: ");
+#ifdef  RELAY_DBG_EN
+	foreach(i, NUMBER_RL) {
+		DBG_RELAY_SEND_INT(i);
+		DBG_RELAY_SEND_STR(", ");
+		DBG_RELAY_SEND_DWORD(relay_on_time_par.total_seconds[i]);
+		if(i < NUMBER_RL-1) {
+			DBG_RELAY_SEND_STR(" - ");
+		}
+	}
+#endif
+}
+
+/**
+ * @func    relay_clean_relay_on_time
+ * @brief
+ * @param   None
+ * @retval  None
+ */
+static void relay_clean_relay_on_time(void)
+{
+	foreach(i, NUMBER_RL) {
+		relay_on_time_par.total_seconds[i] = 0;
+	}
+	relay_store_total_relay_on_time();
+}
 
 /**
  * @func    relay_store_target_state
@@ -196,11 +376,9 @@ void relay_restore_target_state(void)
  */
 static void relay_handle_store_delay(void)
 {
-	if(store_relay_st_delay.enable == true)
-	{
+	if(store_relay_st_delay.enable == true) {
 		if(clock_time_exceed_ms(  \
-				store_relay_st_delay.start_wait_time_t, store_relay_st_delay.time_length))
-		{
+				store_relay_st_delay.start_wait_time_t, store_relay_st_delay.time_length)) {
 			relay_store_target_state();
 			store_relay_st_delay.enable = false;
 			DBG_RELAY_SEND_STR("\n ...STORE RELAY STATE");
@@ -254,9 +432,11 @@ static void relay_normal_off(u8 idx)
 void relay_handle_control_when_timer_match(void)
 {
 	u8 idx = relay_active_st.chn;
+#if MAP_INPUT_OUTPUT_EN
 	if(sw_config_st.map_input[relay_active_st.chn] != RL_ID_UNMAP) {
 		idx = sw_config_st.map_input[relay_active_st.chn] - 1;
 	}
+#endif
 	timer1_disable();
 	if(relay_para.relay_module_st == RELAY_BUSY) {
 		if(idx < NUMBER_RL) {
@@ -313,11 +493,11 @@ void RL_handleZeroSync(void)
 				caculator_grid_freq.cnt_50HZ = 0;
 			}
 
-			DBG_RELAY_SEND_STR("\n CNT_50: ");
-			DBG_RELAY_SEND_INT(caculator_grid_freq.cnt_50HZ);
-
-			DBG_RELAY_SEND_STR("\n CNT_60: ");
-			DBG_RELAY_SEND_INT(caculator_grid_freq.cnt_60HZ);
+//			DBG_RELAY_SEND_STR("\n CNT_50: ");
+//			DBG_RELAY_SEND_INT(caculator_grid_freq.cnt_50HZ);
+//
+//			DBG_RELAY_SEND_STR("\n CNT_60: ");
+//			DBG_RELAY_SEND_INT(caculator_grid_freq.cnt_60HZ);
 
 			if(caculator_grid_freq.cnt_50HZ >= DETECT_FREQ_CNT_DEF   \
 					|| caculator_grid_freq.cnt_60HZ >= DETECT_FREQ_CNT_DEF) {
@@ -352,6 +532,34 @@ void relay_callback_init(typeRL_handle_relay_state_change func)
 void relay_deinit_after_fact(void)
 {
 	relay_restore_target_state();
+}
+
+/**
+ * @func    relay_report_relay_on_time_init
+ * @brief
+ * @param
+ * @retval  None
+ */
+void relay_report_relay_on_time_init(void)
+{
+	foreach(i, NUMBER_RL) {
+		relay_on_time_par.response_last_t_s[i] = 0;
+		relay_on_time_par.interval_t_s[i] =   \
+				RELAY_ON_TIME_PUBLISH_TIME_PW_ON + rand()%RELAY_ON_TIME_PUBLISH_RANDOM_TIME_PW_ON;
+	}
+}
+
+/**
+ * @func    relay_force_control
+ * @brief
+ * @param
+ * @retval  None
+ */
+void relay_force_control(u8 idx, u8 st)
+{
+	if(idx < NUMBER_RL) {
+		relay_set_target_state(idx, st, SRC_DEVICE, false);
+	}
 }
 
 /**
@@ -412,6 +620,19 @@ void relay_init(void)
 	timer1_irq_callback_init(relay_handle_control_when_timer_match);
 	// Call-back sw_config
 	sw_config_callback_init(relay_handle_switch_change_mode);
+
+	// Energy
+	energy_init();
+	energy_callback_init(relay_get_actual_state);
+	bl0906_force_control_relay_callback_init(relay_force_control);
+
+	// Relay On Time
+	relay_restore_total_relay_on_time();
+	relay_report_relay_on_time_init();
+
+	// Fact call_back
+	fact_callback_result_status_init(relay_handle_fact_status);
+	fact_callback_control_relay_init(relay_set_target_state);
 }
 
 /**
@@ -453,6 +674,46 @@ void relay_check_auto_off(void)
 }
 
 /**
+ * @func    relay_calculator_on_time_proc
+ * @brief
+ * @param
+ * @retval  None
+ */
+static void relay_on_time_proc(void)
+{
+	static u32 tick_ms = 0;
+	// Check relay on time
+	if(clock_time_exceed_ms(tick_ms, TIMER_5S)) {
+		u32 tick_ms = clock_time_ms();
+		foreach(i, NUMBER_RL) {
+			// Check update relay on time
+			if(((relay_para.RLS_PRESENT>>i)&0x01) == G_ON) {
+				if(relay_on_time_par.check_start_t_ms[i] > tick_ms) {
+					relay_on_time_par.check_start_t_ms[i]  = tick_ms;
+				}
+				u32 expire_time_ms = tick_ms - relay_on_time_par.check_start_t_ms[i];
+				if(expire_time_ms >= CHECK_RELAY_ON_TIME_INTERVAL_MS) {
+					relay_on_time_par.total_seconds[i] += expire_time_ms/1000;
+					relay_on_time_par.check_start_t_ms[i] = tick_ms;
+					DBG_RELAY_SEND_STR("\n 0_Update relay ON time: ");
+					DBG_RELAY_SEND_INT(i);
+					DBG_RELAY_SEND_STR(", ");
+					DBG_RELAY_SEND_DWORD(relay_on_time_par.total_seconds[i]);
+				}
+			}
+			// Check publish
+			if(clock_time_exceed_s(
+					relay_on_time_par.response_last_t_s[i], relay_on_time_par.interval_t_s[i])) {
+				relay_on_time_par.response_last_t_s[i] =  \
+						RELAY_ON_TIME_PUBLISH_TIME_S + rand()%RELAY_ON_TIME_PUBLISH_RANDOM_TIME_S;
+				relay_on_time_par.response_last_t_s[i] = clock_time_s();
+				relay_response_total_relay_on_time(i);
+			}
+		}
+	}
+}
+
+/**
  * @func    relay_proc
  * @brief
  * @param
@@ -460,6 +721,8 @@ void relay_check_auto_off(void)
  */
 u8 relay_proc(void)
 {
+	relay_on_time_proc();
+	// Check bl0906 busy
 	if(bl0906_is_correction_complete() == false) {
 		return RELAY_IDLE;
 	}
@@ -484,11 +747,35 @@ u8 relay_proc(void)
 				relay_para.RLS_PRESENT &= BACKUP_MASK_RL;
 
 				// Update Actual
-				(relay_active_st.state == G_ON)
-						?(relay_para.RLS_ACTUAL |= (u16)(1 << relay_active_st.chn))
-							:(relay_para.RLS_ACTUAL &= (u16)(~(1 << relay_active_st.chn)));
-				relay_para.RLS_ACTUAL &= BACKUP_MASK_RL;
-
+				if(sw_config_st.switch_mode[relay_active_st.chn] == LIGHTING_SWITCH_TYPE) {
+					relay_para.RLS_ACTUAL |= (u16)(1 << relay_active_st.chn);
+				}
+				else {
+					(relay_active_st.state == G_ON)
+							?(relay_para.RLS_ACTUAL |= (u16)(1 << relay_active_st.chn))
+								:(relay_para.RLS_ACTUAL &= (u16)(~(1 << relay_active_st.chn)));
+				}
+				// Only for MSB
+				u8 idx = relay_active_st.chn;
+				if(idx < NUMBER_RL) {
+					// Relay On time
+					u32 tick_ms = clock_time_ms();
+					if(relay_on_time_par.check_start_t_ms[idx] > tick_ms) {
+						relay_on_time_par.check_start_t_ms[idx]  = tick_ms;
+					}
+					if(relay_active_st.state == G_OFF) {
+						relay_on_time_par.total_seconds[idx] += (tick_ms - relay_on_time_par.check_start_t_ms[idx])/1000;
+						CycleFunc_add(relay_store_total_relay_on_time_delay, TIMER_5S);
+						DBG_RELAY_SEND_STR("\n 1_Update relay ON time: ");
+						DBG_RELAY_SEND_INT(idx);
+						DBG_RELAY_SEND_STR(", ");
+						DBG_RELAY_SEND_DWORD(relay_on_time_par.total_seconds[idx]);
+					}
+					else {
+						relay_on_time_par.check_start_t_ms[idx] = clock_time_ms();
+					}
+					relay_para.RLS_ACTUAL &= BACKUP_MASK_RL;
+				}
 			}
 			relay_para.done_on_off_control_flag = CONTROL_IN_PROCESSING;
 		}
@@ -734,6 +1021,17 @@ void relay_toggle_state(u8 idx, src_control_enum src)
 u8 relay_get_present_state(u8 idx)
 {
 	return ((relay_para.RLS_PRESENT >> idx)&0x01);
+}
+
+/**
+ * @func    relay_get_actual_state
+ * @brief
+ * @param
+ * @retval  None
+ */
+static u8 relay_get_actual_state(u8 idx)
+{
+	return ((relay_para.RLS_ACTUAL >> idx)&0x01);
 }
 
 /**

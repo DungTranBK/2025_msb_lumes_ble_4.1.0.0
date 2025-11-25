@@ -84,16 +84,64 @@ static btn_many_par_t btn_many_par[NUMBER_BUTTON] =  {
 
 static para_btn_reset_t   para_btn_reset = {
 				.is_active = false,
-				.step = 0,
+				.step = STEP_IDLE,
+				.change_step_last_t = MAX_U32,
+				.is_active_st_time = 0,
+			};
+
+
+static para_btn_reset_t   para_btn_default = {
+				.is_active = false,
+				.step = STEP_IDLE,
 				.change_step_last_t = MAX_U32,
 				.is_active_st_time = 0,
 			};
 
 #define MASTER_BTN_INDEX        BUTTON_SWITCH_0_IDX
 
+
+const u8 const_button_config_idx_arr[2]  = { BUTTON_SCENE_0_IDX, BUTTON_SWITCH_0_IDX };
+
+const u8 const_button_default_idx_arr[2] = { BUTTON_SCENE_1_IDX, BUTTON_SWITCH_0_IDX };
+
 /******************************************************************************/
 /*                          PRIVATE FUNCTIONS DECLERATION                     */
 /******************************************************************************/
+
+/**
+ * @func   ev_handle_default_timeout_handle
+ * @brief
+ * @param
+ * @retval None
+ */
+static void ev_handle_default_timeout_handle(void)
+{
+	para_btn_default.step = STEP_IDLE;
+	para_btn_default.is_active = false;
+	led_refresh(BACKUP_MASK_RL);
+}
+
+/**
+ * @func   button_check_clean_default_param
+ * @brief
+ * @param
+ * @retval None
+ */
+void button_check_clean_default_param(void)
+{
+	if(para_btn_default.is_active == true) {
+		if((clock_time_get_elapsed_time(para_btn_default.is_active_st_time) > CONFIRM_RESET_TIMEOUT_MS)) {
+			ev_handle_default_timeout_handle();
+			DBG_BUTTON_SEND_STR("\nev_handle_check_clean_default_param: 0");
+		}
+	}
+	if(para_btn_default.step == STEP_HOLD_5S) {
+		if(clock_time_exceed_ms(para_btn_default.change_step_last_t, TIMER_2S)) {
+			ev_handle_default_timeout_handle();
+			DBG_BUTTON_SEND_STR("\nev_handle_check_clean_reset_param: 1");
+		}
+	}
+}
 
 /**
  * @func   ev_handle_reset_timeout_handle
@@ -119,7 +167,13 @@ void button_check_clean_reset_param(void)
 	if(para_btn_reset.is_active == true) {
 		if((clock_time_get_elapsed_time(para_btn_reset.is_active_st_time) > CONFIRM_RESET_TIMEOUT_MS)) {
 			ev_handle_reset_timeout_handle();
-			DBG_BUTTON_SEND_STR("\nev_handle_check_clean_reset_param OK");
+			DBG_BUTTON_SEND_STR("\nev_handle_check_clean_reset_param: 0");
+		}
+	}
+	if(para_btn_reset.step == STEP_HOLD_5S) {
+		if(clock_time_exceed_ms(para_btn_reset.change_step_last_t, TIMER_2S)) {
+			ev_handle_reset_timeout_handle();
+			DBG_BUTTON_SEND_STR("\nev_handle_check_clean_reset_param: 1");
 		}
 	}
 }
@@ -371,7 +425,35 @@ void button_handle_relay_btn_state(u8 idx, u8 evt)
 	}
 }
 
-const u8 const_button_config_idx_arr[2] = { BUTTON_SCENE_0_IDX, BUTTON_SWITCH_0_IDX };
+/**
+ * @func    is_default_button
+ * @brief   None
+ * @param
+ * @retval  None
+ */
+static bool is_default_button(u8 idx)
+{
+	foreach(i, 2) {
+		if(idx == const_button_default_idx_arr[i]) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/**
+ * @func    update_default_by_btn_step
+ * @brief   None
+ * @param
+ * @retval  None
+ */
+static void update_default_by_btn_step(u8 step)
+{
+	if(step < STEP_INVALID) {
+		para_btn_default.step = step;
+		para_btn_default.change_step_last_t = clock_time_ms();
+	}
+}
 
 /**
  * @func    is_config_button
@@ -388,6 +470,7 @@ static bool is_config_button(u8 idx)
 	}
 	return false;
 }
+
 
 /**
  * @func    update_reset_by_btn_step
@@ -421,11 +504,13 @@ void button_handle_special_event(u8 idx, u8 evt)
 			{
 				if(opt_btn_before_st[idx_cmp].evt == HOLD_5S) {
 					led_off_all();
+					led_scene_off_all();
 					led_set_color(BUTTON_SWITCH_0_IDX - ELE_RELAY_OFFSET, LED_COLOR_PINK);
 					update_reset_by_btn_step(STEP_HOLD_5S);
 				}
 				break;
 			}
+
 			case PRESS_ONE_TIME:
 			{
 				if(idx == MASTER_BTN_INDEX) {
@@ -433,7 +518,7 @@ void button_handle_special_event(u8 idx, u8 evt)
 							&& para_btn_reset.step == STEP_HOLD_5S_RELEASE) {
 						if(!clock_time_exceed_ms( \
 								para_btn_reset.is_active_st_time, CONFIRM_RESET_TIMEOUT_MS)) {
-							setup_factory_reset_with_delay(true);
+							setup_factory_reset_with_delay(true, true);
 							DBG_BUTTON_SEND_STR("\n OUT_NETWORK");
 						}
 						else {
@@ -453,7 +538,73 @@ void button_handle_special_event(u8 idx, u8 evt)
 							para_btn_reset.is_active = true;
 							para_btn_reset.is_active_st_time = clock_time_ms();
 							led_off_all();
+							DBG_BUTTON_SEND_STR("\n --- 1");
 						}
+					}
+					else {
+						ev_handle_reset_timeout_handle();
+						DBG_BUTTON_SEND_STR("\n --- 2");
+					}
+				}
+				else {
+					DBG_BUTTON_SEND_STR("\n --- 3");
+				}
+				break;
+			}
+		}
+	}
+	// Default
+	if(is_default_button(idx) == true) {
+		u8 idx_cmp = (const_button_default_idx_arr[0] == idx)?  \
+				const_button_default_idx_arr[1]:const_button_default_idx_arr[0];
+		switch(evt)
+		{
+			case HOLD_5S:
+			{
+				if(opt_btn_before_st[idx_cmp].evt == HOLD_5S) {
+					led_off_all();
+					led_scene_on(BUTTON_SCENE_1_IDX);
+					update_default_by_btn_step(STEP_HOLD_5S);
+				}
+				break;
+			}
+
+			case PRESS_FIVE_TIME:
+			{
+				if(idx == BUTTON_SCENE_1_IDX) {
+					if(para_btn_default.is_active == true  \
+							&& para_btn_default.step == STEP_HOLD_5S_RELEASE) {
+						if(!clock_time_exceed_ms( \
+								para_btn_default.is_active_st_time, CONFIRM_RESET_TIMEOUT_MS)) {
+							DBG_BUTTON_SEND_STR("\n Reset to default: ");
+							// TODO
+							setup_factory_reset_with_delay(true, false);
+							factory_force_reset_enery_and_relay_on_time();
+							led_scene_push_blink_led_cmd_with_interval_to_fifo(1 << BUTTON_SCENE_1_IDX, 5, TIMER_150MS);
+						}
+						else {
+							button_check_clean_default_param();
+							DBG_BUTTON_SEND_STR("\n Press one time is timeout");
+						}
+					}
+				}
+				break;
+			}
+			case RELEASE:
+			{
+				if(para_btn_default.step == STEP_HOLD_5S) {
+					if(!clock_time_exceed_ms(para_btn_default.change_step_last_t, TIMER_2S)) {
+						if(opt_btn_before_st[idx_cmp].evt == RELEASE) {
+							update_default_by_btn_step(STEP_HOLD_5S_RELEASE);
+							para_btn_default.is_active = true;
+							para_btn_default.is_active_st_time = clock_time_ms();
+							led_scene_off_all();
+							DBG_BUTTON_SEND_STR("\n --- 1");
+						}
+					}
+					else {
+						ev_handle_default_timeout_handle();
+						DBG_BUTTON_SEND_STR("\n --- 2");
 					}
 				}
 				break;

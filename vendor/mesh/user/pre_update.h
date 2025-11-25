@@ -21,11 +21,11 @@ typedef struct {
 	u32 interval_t_s;
 }update_status_periodically_t;
 
-#define MESH_PERIODIC_PUBLISH_RANDOM_TIME	600   // 10 minutes
-#define MESH_PERIODIC_PUBLISH_TIME	        1500  // 25 minutes
+#define MESH_PERIODIC_PUBLISH_RANDOM_TIME       (100*60)  // 100 minutes
+#define MESH_PERIODIC_PUBLISH_TIME	            (20*60)   // 20 minutes
 
 #define MESH_PERIODIC_PUBLISH_RANDOM_TIME_PW_ON	10
-#define MESH_PERIODIC_PUBLISH_TIME_PW_ON	    30
+#define MESH_PERIODIC_PUBLISH_TIME_PW_ON	    120
 
 /******************************************************************************/
 /*                            EXPORTED FUNCTIONS                              */

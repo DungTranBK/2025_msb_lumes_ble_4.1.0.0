@@ -160,6 +160,7 @@ void system_timer_handle_100ms()
 	bind_periodic_handle();
 	#endif
 	button_check_clean_reset_param();
+	button_check_clean_default_param();
 }
 
 void system_time_init(){

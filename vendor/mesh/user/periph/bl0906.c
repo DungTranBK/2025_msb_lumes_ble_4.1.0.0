@@ -27,7 +27,7 @@
 	#define DBG_BL0906_SEND_BYTE(x)    Dbg_sendOneByteHex(x)
     #define DBG_BL0906_SEND_HEX32(x)   Dbg_sendHex32(x)
     #define DBG_Bl0906_SEND_DWORD(x)   Dbg_sendDword(x)
-    #define DBG_Bl0906_SEND_FLOAT(x)   Dbg_sendFloat(x)
+    #define DBG_Bl0906_SEND_FLOAT(x)   //Dbg_sendFloat(x)
 #else
 	#define DBG_BL0906_SEND_STR(x)
 	#define DBG_BL0906_SEND_INT(x)
@@ -39,32 +39,126 @@
 #endif
 
 typeBl0906_handle_update_energy pvBl0906_handle_update_energy = NULL;
+typeBl0906_handle_cf_cnt_scale_overflow pvBl0906_handle_cf_cnt_scale_overflow = NULL;
+
+typeBl0906_force_control_relay pvBl0906_force_control_relay = NULL;
+
 
 /******************************************************************************/
 /*                              PRIVATE DATA                                  */
 /******************************************************************************/
+
+#define K_internal   1 //0.97
+
 const u16 timeout = 1000;  //Serial timeout[ms]
-const float Vref = 1.097;  //[V]
+const float Vref = (1.097*K_internal);  //[V]
 
 const float Rf = 470*4;
 const float Rv = 1;
 const float Gain_v = 1;
-const float Gain_i = 16;
+const float Gain_i = 1;
 const float Rl = 2;  // mOhm
 
-const float cfdiv = 16;
-const float kp = 1;
+const float cfdiv = 1;
+// const float kp = 1;
+
+#define kp (Gain_v*Gain_i)
 
 static bl0906_read_cmd_t cmd_is_running = { .id_register = REG_UNKNOWN };
 static Fifo_t fifo_bl0906_cmd;
 static bl0906_read_cmd_t buffer_bl0906_cmds[BL0906_BUF_CMD_SIZE];
 static measurement_value_t measurement_value;
 
+
+typedef struct {
+	u32 cf_cnt_offset;
+	u32 cf_cnt_present;
+}extend_value_t;
+
+static extend_value_t extend_value[NUMBER_RL];
+
 bool manual_rx_flag = false;
 u8 manual_rx_data[4] = { 0, 0, 0, 0 };
 
 static current_correction_par_t  current_correction_par;
 static gain_par_t gain_par = { .value = 0, .set_gain_st_t_ms = 0 };
+
+
+#if BL0906_CALIB_EN
+/*
+ * Active Power Calibration
+ */
+// const u32 cst_ref_load_active_power_mw[NUMBER_RL] = { 59400, 57000, 59600 };
+
+const u32 cst_ref_load_active_power_mw[NUMBER_RL] = { 40500, 40800, 40800 };
+
+const u32 cst_ref_load_current_ma[NUMBER_RL] = { 185, 186, 186 };
+const u32 cst_ref_voltage_mv = 220000;
+
+
+static BL0906_Operation_Mode_Enum bl0906_operation_mode = BL0906_NORMAL_MODE;
+
+
+enum {
+	CALIB_IDLE,
+	CALIB_GET_CURRENT_ACTIVE_POWER,
+	CALIB_CALCULATOR_K_INTERNAL,
+	CALIP_STEP_UNKNOWN,
+};
+typedef u8 Calib_Step_Enum;
+
+#define ACTIVE_POWER_SAMPLE_CNT      5
+#define SAMPLING_PERIOD_MS           TIMER_1S
+
+typedef struct {
+	Calib_Step_Enum step;
+	u32 start_t_ms;
+	u32 change_step_t_ms;
+	u32 get_sample_st_t_ms;
+
+	u8  sample_cnt[NUMBER_RL];
+	float average_active_power[NUMBER_RL];
+	float total_active_power[NUMBER_RL];
+
+	float voltage;
+
+	u8  sample_current_cnt[NUMBER_RL];
+	float average_current[NUMBER_RL];
+	float total_current[NUMBER_RL];
+
+
+}calibration_par_t;
+
+static calibration_par_t  calibration_par;
+
+
+
+#define K_INTERNAL_MIN                        850
+#define K_INTERNAL_MAX                        1150
+
+#define K_INTERNAL_DEFAULT                    1000
+
+#define THOUSANDTHS_ERROR_DONT_NEED_CALIP     5    // 0.5%
+#define THOUSANDTHS_ERROR_CANT_CALIP          150  // >= 15%
+
+enum {
+	CALIP_RUNNING,
+	CALIP_SUCCESS,
+	CALIP_FAILURE,
+};
+typedef u8 Bl0906_Calib_Status_Enum;
+
+static u16 bl0906_calibration_value[NUMBER_RL];
+
+static u16 voltage_calibration_value = 996;
+
+static u16 current_calibration_value[NUMBER_RL] = {959, 970, 959};
+
+// Flash
+#define BLOCK_SIZE_CALIP_VALUE    sizeof(bl0906_calibration_value)
+#define FLASH_SIZE_CALIP_VALUE    (FLASH_SECTOR_SIZE - BLOCK_SIZE_CALIP_VALUE)
+
+#endif
 
 /******************************************************************************/
 /*                             PRIVATE FUNCS                                  */
@@ -73,9 +167,309 @@ static void bl0906_push_msg(u8 *par, u8 par_len);
 static bool bl0906_write_register(u8 address, u32 data);
 static void bl0906_read_register(u8 address);
 
+static void bl0906_send_get_current(u8 idx);
+static void bl0906_get_voltage(void);
+static void bl0906_get_active_power(u8 idx);
+static void bl0906_get_active_energy(u8 idx);
 /******************************************************************************/
 /*                        EXPORT FUNCTIONS DECLERATION                        */
 /******************************************************************************/
+
+#if BL0906_CALIB_EN
+
+/**
+ * @func    bl0906_store_calib_value
+ * @brief
+ * @param
+ * @retval  None
+ */
+static void bl0906_store_calib_value(void)
+{
+	flash_erase_sector(FLASH_ADR_CALIB_POWER_VALUE);
+	flash_write_page (
+			FLASH_ADR_CALIB_POWER_VALUE, BLOCK_SIZE_CALIP_VALUE, (u8*)&bl0906_calibration_value
+		);
+}
+
+/**
+ * @func    bl0906_restore_calib_value
+ * @brief
+ * @param
+ * @retval  None
+ */
+static void bl0906_restore_calib_value(void)
+{
+	flash_read_page(
+			FLASH_ADR_CALIB_POWER_VALUE, BLOCK_SIZE_CALIP_VALUE, (u8*)&bl0906_calibration_value
+		);
+	foreach(i, NUMBER_RL) {
+		if((bl0906_calibration_value[i] < K_INTERNAL_MIN)  \
+					|| (bl0906_calibration_value[i] > K_INTERNAL_MAX)) {
+			bl0906_calibration_value[i] = K_INTERNAL_DEFAULT;
+		}
+	}
+}
+
+/**
+ * @func    bl0906_get_mode
+ * @brief
+ * @param
+ * @retval  None
+ */
+BL0906_Operation_Mode_Enum bl0906_get_mode(void)
+{
+	return bl0906_operation_mode;
+}
+
+/**
+ * @func    bl0906_calibration_init
+ * @brief
+ * @param
+ * @retval  None
+ */
+void bl0906_go_to_calip_mode(void)
+{
+	memset((u8*)&calibration_par, 0, sizeof(calibration_par));
+	bl0906_operation_mode = BL0906_CALIBRATION_MODE;
+	DBG_BL0906_SEND_STR("\n bl0906_go_to_calip_mode");
+}
+
+/**
+ * @func    Bl0906_calip_change_step
+ * @brief
+ * @param
+ * @retval  None
+ */
+static void Bl0906_calip_change_step(Calib_Step_Enum step)
+{
+	calibration_par.step = step;
+	calibration_par.change_step_t_ms = clock_time_ms();
+	if(step == CALIB_GET_CURRENT_ACTIVE_POWER) {
+		calibration_par.get_sample_st_t_ms = clock_time_ms();
+		// TODO
+		foreach(i, NUMBER_RL) {
+			calibration_par.sample_cnt[i] = 0;
+			calibration_par.average_active_power[i] = 0;
+			calibration_par.total_active_power[i] = 0;
+		}
+	}
+}
+
+/**
+ * @func    bl0906_proc
+ * @brief
+ * @param
+ * @retval  None
+ */
+static Bl0906_Calib_Status_Enum bl0906_calibration_proc(void)
+{
+	switch(calibration_par.step) {
+		case CALIB_IDLE:
+			if(pvBl0906_force_control_relay != NULL) {
+				foreach(i, NUMBER_RL) {
+					pvBl0906_force_control_relay(i, G_ON);
+				}
+				Bl0906_calip_change_step(CALIB_GET_CURRENT_ACTIVE_POWER);
+			}
+			else {
+				return CALIP_FAILURE;
+			}
+			break;
+
+		case CALIB_GET_CURRENT_ACTIVE_POWER:
+		{
+			bool done_flag = true;
+			foreach(i, NUMBER_RL) {
+				if(calibration_par.sample_cnt[i] < ACTIVE_POWER_SAMPLE_CNT) {
+					done_flag = false;
+					break;
+				}
+			}
+			if(done_flag == true) {
+				DBG_BL0906_SEND_STR("\n ******************************\n CALIB_GET_CURRENT_ACTIVE_POWER: ");
+				foreach(i, NUMBER_RL) {
+					calibration_par.average_active_power[i] =  \
+							calibration_par.total_active_power[i]/ACTIVE_POWER_SAMPLE_CNT;
+					DBG_Bl0906_SEND_DWORD(calibration_par.total_active_power[i]);
+					DBG_BL0906_SEND_STR(", ");
+
+
+					calibration_par.average_current[i] =  \
+							calibration_par.total_current[i]/ACTIVE_POWER_SAMPLE_CNT;
+
+
+				}
+				Bl0906_calip_change_step(CALIB_CALCULATOR_K_INTERNAL);
+			}
+			break;
+		}
+		case CALIB_CALCULATOR_K_INTERNAL:
+		{
+			DBG_BL0906_SEND_STR("\n ################################\n CALIB_CALCULATOR_K_INTERNAL ");
+
+			float temp;
+
+			/*
+			 *  Active Current
+			 */
+			foreach(i, NUMBER_RL) {
+				temp = abs(calibration_par.average_current[i] - cst_ref_load_current_ma[i]);
+				// Check don't need to calibration
+				u32 error_in_thousandths =  \
+						(u32)((temp/cst_ref_load_current_ma[i])*1000);
+
+				if(error_in_thousandths <= THOUSANDTHS_ERROR_DONT_NEED_CALIP) {
+					current_calibration_value[i] = K_INTERNAL_DEFAULT;
+					continue;
+				}
+				if(error_in_thousandths > THOUSANDTHS_ERROR_CANT_CALIP) {
+					current_calibration_value[i]  = K_INTERNAL_DEFAULT;
+					return CALIP_FAILURE;
+				}
+				// Positive Error
+				if(calibration_par.average_active_power[i] > cst_ref_load_current_ma[i]) {
+					current_calibration_value[i]  =  \
+							(K_INTERNAL_DEFAULT - error_in_thousandths);
+					continue;
+				}
+				// Negative Error
+				else {
+					current_calibration_value[i]  =  \
+							(K_INTERNAL_DEFAULT + error_in_thousandths);
+				}
+			}
+#ifdef  BL0906_DBG_EN
+			DBG_BL0906_SEND_STR("\n **********************\n Calib_current_arr: ");
+			foreach(i, NUMBER_RL) {
+				DBG_BL0906_SEND_INT(i);
+				DBG_BL0906_SEND_STR(", ");
+				DBG_BL0906_SEND_INT(current_calibration_value[i]);
+				DBG_BL0906_SEND_STR(" - ");
+			}
+#endif
+			/*
+			 * Voltage
+			 */
+
+			temp = abs(calibration_par.voltage - cst_ref_voltage_mv);
+
+			u32 error_in_thousandths =  \
+					(u32)((temp/cst_ref_voltage_mv)*1000);
+
+
+			DBG_BL0906_SEND_STR("\n *** VOLTAGE: ");
+			DBG_Bl0906_SEND_DWORD((u32)calibration_par.voltage);
+
+			if(error_in_thousandths <= THOUSANDTHS_ERROR_DONT_NEED_CALIP) {
+				voltage_calibration_value = K_INTERNAL_DEFAULT;
+			}
+			if(error_in_thousandths > THOUSANDTHS_ERROR_CANT_CALIP) {
+				voltage_calibration_value  = K_INTERNAL_DEFAULT;
+				DBG_BL0906_SEND_STR("\n *** CALIB VOLTAGE FAILURE");
+				return CALIP_FAILURE;
+			}
+			// Positive Error
+			if(calibration_par.voltage > cst_ref_voltage_mv) {
+				voltage_calibration_value  =  \
+						(K_INTERNAL_DEFAULT - error_in_thousandths);
+			}
+			// Negative Error
+			else {
+				voltage_calibration_value  =  \
+						(K_INTERNAL_DEFAULT + error_in_thousandths);
+			}
+#ifdef  BL0906_DBG_EN
+			DBG_BL0906_SEND_STR("\n **********************\n Calib_voltage: ");
+			DBG_BL0906_SEND_INT(voltage_calibration_value);
+#endif
+			/*
+			 *  Active Power
+			 */
+
+			u16 calib_arr[NUMBER_RL];
+			memset((u8*)&calib_arr, 0, sizeof(calib_arr));
+
+			foreach(i, NUMBER_RL) {
+				temp = abs(calibration_par.average_active_power[i] - cst_ref_load_active_power_mw[i]);
+				// Check don't need to calibration
+				u32 error_in_thousandths =  \
+						(u32)((temp/cst_ref_load_active_power_mw[i])*1000);
+
+				if(error_in_thousandths <= THOUSANDTHS_ERROR_DONT_NEED_CALIP) {
+					DBG_BL0906_SEND_STR("\n Don't need calib: ");
+					DBG_BL0906_SEND_INT(i);
+					calib_arr[i] = K_INTERNAL_DEFAULT;
+					continue;
+				}
+				if(error_in_thousandths > THOUSANDTHS_ERROR_CANT_CALIP) {
+					DBG_BL0906_SEND_STR("\n Error over 10%, cannot be processed: ");
+					DBG_BL0906_SEND_INT(i);
+					DBG_BL0906_SEND_STR(", ");
+					DBG_BL0906_SEND_INT(calibration_par.average_active_power[i]);
+
+					DBG_BL0906_SEND_STR(", ");
+					DBG_BL0906_SEND_INT(temp);
+
+					calib_arr[i] = K_INTERNAL_DEFAULT;
+					return CALIP_FAILURE;
+				}
+				// Positive Error
+				if(calibration_par.average_active_power[i] > cst_ref_load_active_power_mw[i]) {
+					calib_arr[i] =  \
+							(K_INTERNAL_DEFAULT - error_in_thousandths);
+					DBG_BL0906_SEND_STR("\n Positive Error: ");
+					DBG_BL0906_SEND_INT(i);
+					DBG_BL0906_SEND_STR(" - ");
+					DBG_BL0906_SEND_INT(calib_arr[i]);
+					continue;
+				}
+				// Negative Error
+				else {
+					calib_arr[i] =  \
+							(K_INTERNAL_DEFAULT + error_in_thousandths);
+					DBG_BL0906_SEND_STR("\n Negative Error: ");
+					DBG_BL0906_SEND_INT(i);
+					DBG_BL0906_SEND_STR(" - ");
+					DBG_BL0906_SEND_INT(calib_arr[i]);
+				}
+				// Double check
+				if(calib_arr[i] < K_INTERNAL_MIN  \
+						|| calib_arr[i] > K_INTERNAL_MAX) {
+					DBG_BL0906_SEND_STR("\n Error range over: ");
+					DBG_BL0906_SEND_INT(i);
+					DBG_BL0906_SEND_STR(", ");
+					DBG_BL0906_SEND_INT(calib_arr[i]);
+					return CALIP_FAILURE;
+				}
+			}
+#ifdef  BL0906_DBG_EN
+			DBG_BL0906_SEND_STR("\n **********************\n Calibration success: ");
+			foreach(i, NUMBER_RL) {
+				DBG_BL0906_SEND_INT(i);
+				DBG_BL0906_SEND_STR(", ");
+				DBG_BL0906_SEND_INT(bl0906_calibration_value[i]);
+			}
+#endif
+			/*
+			 *  Update calibration value and control relay
+			 */
+			foreach(i, NUMBER_RL) {
+				bl0906_calibration_value[i] = calib_arr[i];
+			}
+			bl0906_store_calib_value();
+			// Turn off all relay after calibration
+			foreach(i, NUMBER_RL) {
+				pvBl0906_force_control_relay(i, G_OFF);
+			}
+
+			return CALIP_SUCCESS;
+		}
+		default: return CALIP_FAILURE;
+	}
+	return CALIP_RUNNING;
+}
+
+#endif
 
 
 /**
@@ -104,16 +498,35 @@ void bl_0906_set_gain(u32 gain)
 }
 
 /**
+ * @func    bl0906_force_control_relay_callback_init
+ * @brief
+ * @param
+ * @retval  None
+ */
+void bl0906_force_control_relay_callback_init(typeBl0906_force_control_relay func)
+{
+	if(func != NULL) {
+		pvBl0906_force_control_relay = func;
+	}
+}
+
+/**
  * @func    bl0940_init
  * @brief
  * @param
  * @retval  None
  */
-void bl0906_init(typeBl0906_handle_update_energy func)
+void bl0906_init(
+			typeBl0906_handle_update_energy func,
+			typeBl0906_handle_cf_cnt_scale_overflow func_1
+		)
 {
 	FifoInit(&fifo_bl0906_cmd, &buffer_bl0906_cmds, sizeof(bl0906_read_cmd_t), BL0906_BUF_CMD_SIZE);
 	if(func != NULL) {
 		pvBl0906_handle_update_energy = func;
+	}
+	if(func_1 != NULL) {
+		pvBl0906_handle_cf_cnt_scale_overflow = func_1;
 	}
 	// For current correction when power on
 	current_correction_par.step = STEP_CORRECTION_READ_RMSOS;
@@ -122,7 +535,17 @@ void bl0906_init(typeBl0906_handle_update_energy func)
 	current_correction_par.retry_start_time_ms = 0;
 	foreach(i, NUMBER_RL) {
 		current_correction_par.complete_flag[i] = false;
+		extend_value[i].cf_cnt_offset = CF_CNT_UNKNOWN;
+		extend_value[i].cf_cnt_present = CF_CNT_UNKNOWN;
+#if BL0906_CALIB_EN
+		bl0906_calibration_value[i] = 1000;
+#endif
 	}
+
+#if BL0906_CALIB_EN
+	bl0906_restore_calib_value();
+#endif
+
 }
 
 /**
@@ -142,10 +565,12 @@ static u32 array_to_u24(u8* in)
  * @param
  * @retval  None
  */
-static void bl0906_update_energy(u8 type, float value)
+static void bl0906_update_energy(u8 idx, u8 type, float value)
 {
-	if(pvBl0906_handle_update_energy != NULL) {
-		pvBl0906_handle_update_energy(type, value);
+	if(bl0906_is_correction_complete() == true) {
+		if(pvBl0906_handle_update_energy != NULL) {
+			pvBl0906_handle_update_energy(idx, type, value);
+		}
 	}
 }
 
@@ -250,6 +675,22 @@ static void bl0906_handle_current_rsp(u8* par, u8 par_len)
 	DBG_BL0906_SEND_STR(", ");
 	DBG_BL0906_SEND_INT((u16)measurement_value.current);
 
+#if BL0906_CALIB_EN
+	DBG_BL0906_SEND_STR(", ");
+	DBG_Bl0906_SEND_DWORD((u32)(measurement_value.current*current_calibration_value[index]/1000));
+#endif
+
+#if BL0906_CALIB_EN
+	if(bl0906_operation_mode == BL0906_CALIBRATION_MODE) {
+		if(calibration_par.step == CALIB_GET_CURRENT_ACTIVE_POWER) {
+			if(calibration_par.sample_current_cnt[index] < ACTIVE_POWER_SAMPLE_CNT) {
+				calibration_par.total_current[index] += measurement_value.current;
+				calibration_par.sample_current_cnt[index]++;
+			}
+		}
+	}
+#endif
+
 	if(current_correction_par.step == STEP_CORRECTION_PROCESS) {
 		if(current_correction_par.complete_flag[index] == false) {
 			if(measurement_value.current == 0) {
@@ -266,9 +707,9 @@ static void bl0906_handle_current_rsp(u8* par, u8 par_len)
 		}
 	}
 	else {
-		DBG_BL0906_SEND_STR("\n************************* NORMAL");
+		//DBG_BL0906_SEND_STR("\n************************* NORMAL");
 	}
-	bl0906_update_energy(TYPE_CURRENT, measurement_value.current);
+	bl0906_update_energy(index, TYPE_CURRENT, measurement_value.current);
 }
 
 /**
@@ -316,9 +757,7 @@ static void bl0906_handle_rmsos_rsp(u8* par, u8 par_len)
 		DBG_BL0906_SEND_INT(index);
 	}
 	else {
-
 		DBG_BL0906_SEND_STR("\n STEP_CORRECTION_PROCESS");
-
 		if(current_correction_par.rmsos[index] == rmsos) {
 			current_correction_par.complete_flag[index] = true;
 			DBG_BL0906_SEND_STR("\n RMSOS set complete: ");
@@ -339,12 +778,34 @@ static void bl0906_handle_voltage_rsp(u8* par, u8 par_len)
 {
 	u32 data = array_to_u24(par);
 	measurement_value.voltage = \
-			(float)data * Vref * (Rf + Rv) / (13162*Rv*Gain_v*1000);
-	bl0906_update_energy(TYPE_VOLTAGE, measurement_value.voltage);
+			(float)data * Vref * (Rf + Rv) / (13162*Rv*Gain_v*1000)*1000;    // mV
+	bl0906_update_energy(0, TYPE_VOLTAGE, measurement_value.voltage);
+
+
+#if BL0906_CALIB_EN
+	if(bl0906_operation_mode == BL0906_CALIBRATION_MODE) {
+		if(calibration_par.step == CALIB_GET_CURRENT_ACTIVE_POWER) {
+			if(calibration_par.voltage > 1000) {
+				calibration_par.voltage = measurement_value.voltage;
+			}
+			else {
+				calibration_par.voltage = (measurement_value.voltage+calibration_par.voltage)/2;
+			}
+		}
+	}
+#endif
+
+
 	DBG_BL0906_SEND_STR("\n __VOLTAGE__:");
-	DBG_BL0906_SEND_INT((u16)measurement_value.voltage);
+	DBG_BL0906_SEND_INT((u16)(measurement_value.voltage/1000));
 	DBG_BL0906_SEND_STR(", ");
 	DBG_Bl0906_SEND_FLOAT(measurement_value.voltage);
+
+#if BL0906_CALIB_EN
+	DBG_BL0906_SEND_STR(", ");
+	DBG_Bl0906_SEND_DWORD((u32)(measurement_value.voltage*voltage_calibration_value/1000));
+#endif
+
 }
 
 /**
@@ -356,6 +817,21 @@ static void bl0906_handle_voltage_rsp(u8* par, u8 par_len)
 static void bl0906_handle_active_power_rsp(u8* par, u8 par_len)
 {
 	u32 data = array_to_u24(par);
+	u8 index;
+	switch(cmd_is_running.id_register) {
+		case WATT_1:
+			index = 0;
+			break;
+		case WATT_2:
+			index = 1;
+			break;
+		case WATT_3:
+			index = 2;
+			break;
+
+		default:
+			return;
+	}
 	bool sign_bit = (par[2]>>7)&0x01;
 	if (sign_bit == 1) {
 		DBG_BL0906_SEND_STR("\n ***Negative Power");
@@ -363,17 +839,30 @@ static void bl0906_handle_active_power_rsp(u8* par, u8 par_len)
 	}
 	else {
 		measurement_value.active_power =
-			(float)data * Vref * Vref * (Rf + Rv)/(40.4125 * Rl*Rv*Gain_i * Gain_v*1000);
+			(float)data * Vref * Vref * (Rf + Rv)/(40.4125 * Rl*Rv*Gain_i*1000)*1000;    // Convert from W to mW
 	}
+	bl0906_update_energy(index, TYPE_ACTIVE_POWER, measurement_value.active_power);
 
-	DBG_BL0906_SEND_STR("\n POWER_REG: ");
-	DBG_BL0906_SEND_HEX32((u32)data);
+#if BL0906_CALIB_EN
+	if(bl0906_operation_mode == BL0906_CALIBRATION_MODE) {
+		if(calibration_par.step == CALIB_GET_CURRENT_ACTIVE_POWER) {
+			if(calibration_par.sample_cnt[index] < ACTIVE_POWER_SAMPLE_CNT) {
+				calibration_par.total_active_power[index] += measurement_value.active_power;
+				calibration_par.sample_cnt[index]++;
+			}
+		}
+	}
+#endif
 
-	bl0906_update_energy(TYPE_ACTIVE_POWER, measurement_value.active_power);
-	DBG_BL0906_SEND_STR("\n __ACTIVE_POWER__:");
-	DBG_BL0906_SEND_INT((u16)measurement_value.active_power);
+	DBG_BL0906_SEND_STR("\n __ACTIVE_POWER__: ");
+	DBG_BL0906_SEND_INT(index);
+	DBG_BL0906_SEND_STR(" - ");
+	DBG_Bl0906_SEND_DWORD(measurement_value.active_power);
+
+#if BL0906_CALIB_EN
 	DBG_BL0906_SEND_STR(", ");
-	DBG_Bl0906_SEND_FLOAT(measurement_value.active_power);
+	DBG_Bl0906_SEND_DWORD((u32)(measurement_value.active_power*bl0906_calibration_value[index]/1000));
+#endif
 }
 
 /**
@@ -384,24 +873,74 @@ static void bl0906_handle_active_power_rsp(u8* par, u8 par_len)
  */
 static void bl0906_handle_active_energy_rsp(u8* par, u8 par_len)
 {
-	u32 data = array_to_u24(par);
-	if (data < 0) {
-		DBG_BL0906_SEND_STR("\n Energy Unused");
-		return;
-	}
-	float WH_PER_PULSE = (4194304 * 0.032768 * 16) / (3600000 * cfdiv  * kp);
-	measurement_value.active_energy = data * WH_PER_PULSE;
+	u32 cf_cnt = array_to_u24(par);
+	u8 index;
+	switch(cmd_is_running.id_register) {
+		case CF1_CNT:
+			index = 0;
+			break;
 
+		case CF2_CNT:
+			index = 1;
+			break;
+
+		case CF3_CNT:
+			index = 2;
+			break;
+
+		default:
+			return;
+	}
+
+	if(extend_value[index].cf_cnt_offset == CF_CNT_UNKNOWN) {
+		extend_value[index].cf_cnt_offset = cf_cnt;
+		//DBG_BL0906_SEND_STR("\n Initial CF_CNT_OFFSET");
+	}
+	if(extend_value[index].cf_cnt_present == CF_CNT_UNKNOWN) {
+		extend_value[index].cf_cnt_present = cf_cnt;
+		//DBG_BL0906_SEND_STR("\n Initial CF_CNT_PRESENT");
+	}
+	else {
+		if(cf_cnt < extend_value[index].cf_cnt_present) {
+            /*
+			DBG_BL0906_SEND_STR("\n Handle CF_CNT OVERFLOW: ");
+			DBG_Bl0906_SEND_DWORD(cf_cnt);
+			DBG_BL0906_SEND_STR(", ");
+			DBG_Bl0906_SEND_DWORD(extend_value[index].cf_cnt_present);
+            */
+			extend_value[index].cf_cnt_offset = cf_cnt;
+			if(pvBl0906_handle_cf_cnt_scale_overflow != NULL) {
+				pvBl0906_handle_cf_cnt_scale_overflow(index);
+				//DBG_BL0906_SEND_STR("1");
+			}
+		}
+	}
+	extend_value[index].cf_cnt_present = cf_cnt;
+
+	u32 delta_cf_cnt = cf_cnt - extend_value[index].cf_cnt_offset;
+	float k_p = (40.4125*Rl*Rv*Gain_i)/(Vref * Vref * (Rf + Rv));
+	float WH_PER_PULSE = (4194304*0.032768 * Gain_i) / (3600000 * cfdiv  * k_p);
+
+	measurement_value.active_energy = delta_cf_cnt * WH_PER_PULSE;
+
+#if BL0906_CALIB_EN
+	measurement_value.active_energy = measurement_value.active_energy*bl0906_calibration_value[index]/1000;
+#endif
+
+
+	bl0906_update_energy(index, TYPE_ACTIVE_ENERGY, measurement_value.active_energy);
+/*
 	DBG_BL0906_SEND_STR("\n __ACTIVE_ENERGY__:");
-	DBG_Bl0906_SEND_DWORD(data);
+	DBG_Bl0906_SEND_DWORD(cf_cnt);
 	DBG_BL0906_SEND_STR(", ");
 	DBG_BL0906_SEND_INT((u16)measurement_value.active_energy);
 
-	DBG_BL0906_SEND_STR(", ");
-	DBG_Bl0906_SEND_FLOAT(measurement_value.active_energy);
+	DBG_BL0906_SEND_STR(" - ");
+	DBG_Bl0906_SEND_DWORD(extend_value[index].cf_cnt_offset);
 
 	DBG_BL0906_SEND_STR(", ");
-	DBG_Bl0906_SEND_FLOAT(WH_PER_PULSE);
+	DBG_Bl0906_SEND_DWORD(extend_value[index].cf_cnt_present);
+	*/
 }
 
 /**
@@ -415,7 +954,7 @@ static void bl0906_handle_temperature_rsp(u8* par, u8 par_len)
 	u32 data = array_to_u24(par) & 0x03FF;
 	measurement_value.temperature =  \
 			(data - 64)*12.5/59-40;
-	bl0906_update_energy(TYPE_TEMPERATURE, measurement_value.temperature);
+	// bl0906_update_energy(0, TYPE_TEMPERATURE, measurement_value.temperature);
 }
 
 /**
@@ -451,29 +990,25 @@ static bool bl0906_push_wait_reg_rsp_to_fifo(u8 reg_id)
  * @param
  * @retval  None
  */
-void bl0906_measurenment_start(u16 m_mask)
+void bl0906_measurenment_start(u8 idx, u16 m_mask)
 {
 	foreach(i, BL0904_MEASUREMENT_MAX)
 	{
 		u16 tmp = (m_mask & (u16)(1 << i));
 		if(!tmp) continue;
 		if(tmp == BIT_MASK_CURRENT) {
-			bl0906_send_get_current();
+			bl0906_send_get_current(idx);
 		}
 		else if(tmp == BIT_MASK_VOLTAGE) {
-			bl0906_get_voltage();
+			if(idx == 0) {
+				bl0906_get_voltage();
+			}
 		}
 		else if(tmp == BIT_MASK_ACTIVE_POWER) {
-			bl0906_get_active_power();
+			bl0906_get_active_power(idx);
 		}
 		else if(tmp == BIT_MASK_ACTIVE_ENERGY) {
-			bl0906_get_active_energy();
-		}
-		else if(tmp == BIT_MASK_POWER_FACTOR) {
-			bl0906_get_power_factor();
-		}
-		else if(tmp == BIT_MASK_TEMPERATURE) {
-			bl0906_get_temperature();
+			bl0906_get_active_energy(idx);
 		}
 	}
 }
@@ -515,7 +1050,9 @@ static void bl0906_current_correction_proc(void)
 					if(current_correction_par.retry_start_time_ms == 0) {
 						current_correction_par.retry_start_time_ms = 1;
 					}
-					bl0906_send_get_current();
+					foreach(i, NUMBER_RL) {
+						bl0906_send_get_current(i);
+					}
 					DBG_BL0906_SEND_STR("\n &&&&&&&&&&&&&&&&&&&&&&&&&&&");
 					return;
 				}
@@ -536,11 +1073,13 @@ static void bl0906_current_correction_proc(void)
  */
 static void bl0906_set_gain_proc(void)
 {
-	if(gain_par.value != GAIN_1_DEFAULT_VALUE) {
-		if(clock_time_exceed_ms(gain_par.set_gain_st_t_ms, SET_GAIN_INTERVAL_MS)) {
-			bl_0906_set_gain(GAIN_1_DEFAULT_VALUE);
-			bl0906_read_register(GAIN_1);
-			gain_par.set_gain_st_t_ms = clock_time_ms();
+	if(Gain_i == 16) {
+		if(gain_par.value != GAIN_1_DEFAULT_VALUE) {
+			if(clock_time_exceed_ms(gain_par.set_gain_st_t_ms, SET_GAIN_INTERVAL_MS)) {
+				bl_0906_set_gain(GAIN_1_DEFAULT_VALUE);
+				bl0906_read_register(GAIN_1);
+				gain_par.set_gain_st_t_ms = clock_time_ms();
+			}
 		}
 	}
 }
@@ -562,7 +1101,7 @@ static void bl0906_fifo_proc(void)
 		if (FifoIsEmpty(&fifo_bl0906_cmd) == false){
 			if(FifoPop(&fifo_bl0906_cmd, &cmd_is_running)){
 				cmd_is_running.active_st_time = clock_time_ms();
-					switch(cmd_is_running.id_register) {
+				switch(cmd_is_running.id_register) {
 					case I1_RMS:
 					case I2_RMS:
 					case I3_RMS:
@@ -619,6 +1158,16 @@ static void bl0906_fifo_proc(void)
  */
 void bl0906_proc(void)
 {
+#if BL0906_CALIB_EN
+	if(bl0906_operation_mode == BL0906_CALIBRATION_MODE) {
+		Bl0906_Calib_Status_Enum status;
+		status = bl0906_calibration_proc();
+		if(status == CALIP_FAILURE || status == CALIP_SUCCESS) {
+			bl0906_operation_mode = BL0906_NORMAL_MODE;
+		}
+	}
+#endif
+
 	bl0906_current_correction_proc();
 	bl0906_set_gain_proc();
 	bl0906_fifo_proc();
@@ -721,11 +1270,19 @@ static void bl0906_read_register(u8 address)
  * @param
  * @retval  None
  */
-void bl0906_send_get_current(void)
+void bl0906_send_get_current(u8 idx)
 {
-	bl0906_read_register(I1_RMS);
-	bl0906_read_register(I2_RMS);
-	bl0906_read_register(I3_RMS);
+	if(idx < NUMBER_RL) {
+		if(idx == 0) {
+			bl0906_read_register(I1_RMS);
+		}
+		else if(idx == 1) {
+			bl0906_read_register(I2_RMS);
+		}
+		else if(idx == 2) {
+			bl0906_read_register(I3_RMS);
+		}
+	}
 }
 
 /**
@@ -745,11 +1302,19 @@ void bl0906_get_voltage(void)
  * @param
  * @retval  None
  */
-void bl0906_get_active_power(void)
+void bl0906_get_active_power(u8 idx)
 {
-	bl0906_read_register(WATT_1);
-	bl0906_read_register(WATT_2);
-	bl0906_read_register(WATT_3);
+	if(idx < NUMBER_RL) {
+		if(idx == 0) {
+			bl0906_read_register(WATT_1);
+		}
+		else if(idx == 1) {
+			bl0906_read_register(WATT_2);
+		}
+		else if(idx == 2) {
+			bl0906_read_register(WATT_3);
+		}
+	}
 }
 
 /**
@@ -758,24 +1323,22 @@ void bl0906_get_active_power(void)
  * @param
  * @retval  None
  */
-void bl0906_get_active_energy(void)
+void bl0906_get_active_energy(u8 idx)
 {
-	bl0906_read_register(CF1_CNT);
-	bl0906_read_register(CF2_CNT);
-	bl0906_read_register(CF3_CNT);
+	if(idx < NUMBER_RL) {
+		if(idx == 0) {
+			bl0906_read_register(CF1_CNT);
+		}
+		else if(idx == 1) {
+			bl0906_read_register(CF2_CNT);
+		}
+		else if(idx == 2) {
+			bl0906_read_register(CF3_CNT);
+		}
+	}
 }
 
-/**
- * @func    bl0906_get_power_factor
- * @brief
- * @param
- * @retval  None
- */
-void bl0906_get_power_factor(void)
-{
-	//bl0906_read_register(POWER_FACTOR_REG);
-}
-
+#if 0
 /**
  * @func    bl0906_get_temperature
  * @brief
@@ -786,6 +1349,7 @@ void bl0906_get_temperature(void)
 {
 	bl0906_read_register(TPS);
 }
+#endif
 
 /**
  * @func    bl0906_reset

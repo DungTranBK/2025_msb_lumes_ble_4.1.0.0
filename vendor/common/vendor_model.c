@@ -41,6 +41,10 @@
 #include "../mesh/user/timestamp.h"
 #include "../mesh/user/lock_schedule.h"
 #include "../mesh/user/fact/fact_handle.h"
+#include "../mesh/user/relay.h"
+#include "../mesh/user/com.h"
+#include "../mesh/user/energy.h"
+#include "../mesh/user/periph/bl0906.h"
 #include "vendor_model.h"
 
 #include "../mesh/user/debug.h"
@@ -876,14 +880,33 @@ int cb_vd_control_locally(u8 *par, int par_len, mesh_cb_fun_par_t *cb_par)
  */
 int cb_vd_config_node_set(u8 *par, int par_len, mesh_cb_fun_par_t *cb_par)
 {
+	DBG_VENDOR_MODEL_SEND_STR("\n cb_vd_config_node_set: ");
 	int err = 0;
-	if(cb_par->adr_src == GATEWAY_UNICAST_ADDR){
+	if(cb_par->adr_src == CALIB_GATEWAY_UNICAST_ADDR){
+#if BL0906_CALIB_EN
+		if(cb_par->model_idx == 0){
+			if(cb_par->model){
+				vd_config_node_t* vd_config_node = (vd_config_node_t*)par;
+				if(vd_config_node->code == VD_CONFIG_GO_TO_CALIP_MODE) {
+					DBG_VENDOR_MODEL_SEND_STR("\n VD_CONFIG_GO_TO_CALIP_MODE: 0");
+					if(is_provision_success() == true) {
+						return -1;
+					}
+					if(cb_par->adr_src == CALIB_GATEWAY_UNICAST_ADDR) {
+						bl0906_go_to_calip_mode();
+					}
+				}
+			}
+		}
+#endif
+	}
+	else if(cb_par->adr_src == GATEWAY_UNICAST_ADDR){
 		if(cb_par->model_idx == 0){
 			if(cb_par->model){
 				vd_config_node_t* vd_config_node = (vd_config_node_t*)par;
 				if(vd_config_node->code == VD_CONFIG_NODE_RST){
 					DBG_VENDOR_MODEL_SEND_STR("\n cb_vd_factory_reset_set ");
-					setup_factory_reset_with_delay(true);
+					setup_factory_reset_with_delay(true, true);
 				}
 				else if(vd_config_node->code == VD_CONFIG_SET_TTL){
 					DBG_VENDOR_MODEL_SEND_STR("\n mesh_cmd_sig_cfg_def_ttl_set ");
@@ -896,6 +919,17 @@ int cb_vd_config_node_set(u8 *par, int par_len, mesh_cb_fun_par_t *cb_par)
 					mesh_cb_fun_par_t* vd_cb_par = cb_par;
 					vd_cb_par->op = CFG_DEFAULT_TTL_GET;
 					mesh_cmd_sig_cfg_def_ttl_get((void*)0, 0, vd_cb_par);
+				}
+				else if(vd_config_node->code == VD_CONFIG_GO_TO_CALIP_MODE) {
+					DBG_VENDOR_MODEL_SEND_STR("\n VD_CONFIG_GO_TO_CALIP_MODE: 1 ");
+					if(is_provision_success() == true) {
+						return -1;
+					}
+#if BL0906_CALIB_EN
+					if(cb_par->adr_src == CALIB_GATEWAY_UNICAST_ADDR) {
+						bl0906_go_to_calip_mode();
+					}
+#endif
 				}
 				else{
 					// Reserved for the feature use
@@ -1619,12 +1653,28 @@ int cb_vd_config_node_set_ack(u8 *par, int par_len, mesh_cb_fun_par_t *cb_par)
 					else if(config_node->code == VD_TS_LOCK_SCHEDULE) {
 						vd_lock_schedule_get(config_node->data, par_len - 2, cb_par);
 					}
+					else if(config_node->code ==  VD_ACTIVE_ENERGY_INFORMATION) {
+						energy_setup_publish_energy_delay(cb_par->model_idx - ELE_RELAY_OFFSET, 0);
+					}
+					else if(config_node->code ==  VD_IUP_INFORMATION) {
+						energy_setup_publish_iup_pf_delay(cb_par->model_idx - ELE_RELAY_OFFSET, 0, RP_SRC_QUERY);
+					}
+					else if(config_node->code ==  VD_TOTAL_RELAY_ON_TIME_INFORMATION) {
+						relay_response_total_relay_on_time(cb_par->model_idx - ELE_RELAY_OFFSET);
+					}
 					else {
 						err = sw_cfg_handle_get_message(cb_par->model_idx,  \
 								    config_node->data, par_len - 2, config_node->code);
 					}
 				}
-
+				else if(config_node->msg_type == CONFIG_NODE_DELETE) {
+					if(config_node->code ==  VD_ACTIVE_ENERGY_INFORMATION) {
+						energy_handle_delete_power_information(cb_par->model_idx - ELE_RELAY_OFFSET);
+					}
+					else if(config_node->code ==  VD_TOTAL_RELAY_ON_TIME_INFORMATION) {
+						relay_handle_delete_relay_on_time(cb_par->model_idx - ELE_RELAY_OFFSET);
+					}
+				}
 			}
 			else {
 				err = -1;

@@ -9,6 +9,9 @@
 #include "../../../proj_lib/ble/ll//ll.h"
 #include "../../common/app_beacon.h"
 #include "../../common/generic_model.h"
+#include "relay.h"
+#include "energy.h"
+#include "com.h"
 #include "utilities.h"
 #include "led.h"
 #include "factory_reset.h"
@@ -77,7 +80,7 @@ void handle_factory_reset_with_delay(void)
  * @param   None
  * @retval  None
  */
-void setup_factory_reset_with_delay(u8 enable)
+void setup_factory_reset_with_delay(u8 enable, u8 led_blink)
 {
 	DBG_FACTORY_RST_SEND_STR("\n setup_factory_reset_with_delay");
 	if(enable == true) {
@@ -86,14 +89,33 @@ void setup_factory_reset_with_delay(u8 enable)
 		factoryReset.delayTime = 1000;
 		send_config_node_reset_status_manual();
 		led_off_all();
-		led_blink_color(
-				LED_CONFIG_MASK, LED_COLOR_PINK, 2, LAST_STATE_REFRESH_LED, 180
-			);
+		if(led_blink == true) {
+			led_blink_color(
+					LED_CONFIG_MASK, LED_COLOR_PINK, 2, LAST_STATE_REFRESH_LED, 180
+				);
+		}
+		else {
+			factoryReset.delayTime = 2000;
+		}
 	}
 	else {
 		factoryReset.flag = false;
 	}
 }
+
+
+/**
+ * @func    factory_force_reset_enery_and_relay_on_time
+ * @brief
+ * @param   None
+ * @retval  None
+ */
+void factory_force_reset_enery_and_relay_on_time(void)
+{
+    flash_erase_sector(FLASH_ADR_ENERGY);
+    flash_erase_sector(FLASH_ADR_RELAY_ON_TIME);
+}
+
 /**
  * @func    factory_reset
  * @brief
@@ -106,7 +128,13 @@ int factory_reset()
 	u8 r = irq_disable ();
 	for(int i = 0; i < (FLASH_ADR_AREA_1_END - FLASH_ADR_AREA_1_START) / 4096; ++i) {
 	    u32 adr = FLASH_ADR_AREA_1_START + i*0x1000;
-		flash_erase_sector(adr);
+	    if(adr != FLASH_ADR_RELAY_ON_TIME
+#if BL0906_CALIB_EN
+	    		&&adr != FLASH_ADR_RELAY_ON_TIME
+#endif
+	    		) {
+	    	flash_erase_sector(adr);
+	    }
 	}
 	for(int i = 0; i < (FLASH_ADR_AREA_2_END - FLASH_ADR_AREA_2_START) / 4096; ++i) {
 	    u32 adr = FLASH_ADR_AREA_2_START + i*0x1000;
@@ -119,6 +147,7 @@ int factory_reset()
     flash_erase_sector(FLASH_ADR_EXECUTION_SCENE);
     flash_erase_sector(FLASH_ADR_LOCK_STATUS);
     flash_erase_sector(FLASH_ADR_BINDING_PARAMS);
+    // Store current active power and relay on time
 	return 0;
 }
 /**
@@ -133,5 +162,5 @@ void kick_out(int led_en)
 	if(bls_ll_isConnectState()) {
 		bls_ll_terminateConnection (0x13);
 	}
-	setup_factory_reset_with_delay(ENABLE);
+	setup_factory_reset_with_delay(ENABLE, true);
 }

@@ -80,6 +80,7 @@
 #include "user/timestamp.h"
 #include "user/energy.h"
 #include "user/periph/bl0906.h"
+#include "user/cycle_funcs.h"
 #include "app.h"
 
 #include "user/debug.h"
@@ -678,8 +679,14 @@ void main_loop ()
 	proc_default_network();
 	led_handle_event_function();
 	led_scene_handle_event_function();
-	option_button_scan();
+#if BL0906_CALIB_EN
+	if(bl0906_get_mode() == BL0906_NORMAL_MODE)
+#endif
+	{
+		option_button_scan();
+	}
 	relay_proc();
+
 	// Time stamp
 	timestamp_proc();
 
@@ -694,6 +701,8 @@ void main_loop ()
 		info_proc();
 	}
 #endif
+
+	CycleFunc_proc();
 
 #if defined APP_DBG_EN
 	static u32 temp_t = 0;
@@ -1121,10 +1130,6 @@ void user_init()
 	option_button_init();
 	option_button_callback_init(button_handle_option_btn_state);
 
-	// Relay
-	relay_init();
-	relay_callback_init(net_message_handle_state_change);
-
 #if BIND_APPKEY_PERIODIC
 	bind_periodic_init();
 #endif
@@ -1145,8 +1150,14 @@ void user_init()
 #endif
     sleep_ms(TIMER_500MS);
 
-    // Energy
-    energy_init();
+
+	// Relay
+	relay_init();
+	relay_callback_init(net_message_handle_state_change);
+
+	// Cycle function
+	CycleFunc_init();
+
 
 	// Led power on
 	send_led_evt_to_mcu(LED_POWER_ON, 0xFFFF);

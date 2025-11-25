@@ -54,6 +54,8 @@ enum {
 	USR_WRPROT = 0x9E,
 	SOFT_RESET = 0x9F,
 
+	CFDIV      = 0xCE,
+
 	REG_UNKNOWN = 0xFF,
 };
 
@@ -63,8 +65,6 @@ enum m_type_enum{
 	TYPE_VOLTAGE       = 1,
 	TYPE_ACTIVE_POWER  = 2,
 	TYPE_ACTIVE_ENERGY = 3,
-	TYPE_POWER_FACTOR  = 4,
-	TYPE_TEMPERATURE   = 5,
 };
 typedef u8 m_type_enum;
 
@@ -76,12 +76,12 @@ typedef u8 m_type_enum;
 #define BIT_MASK_VOLTAGE        BIT(1)
 #define BIT_MASK_ACTIVE_POWER   BIT(2)
 #define BIT_MASK_ACTIVE_ENERGY  BIT(3)
-#define BIT_MASK_POWER_FACTOR   BIT(4)
-#define BIT_MASK_TEMPERATURE    BIT(5)
-#define BIT_MASK_MAX            BIT_MASK_TEMPERATURE
+#define BIT_MASK_MAX            BIT_MASK_ACTIVE_ENERGY
 
-#define BL0904_MEASUREMENT_MAX  6
+#define BL0904_MEASUREMENT_MAX  4
 
+
+#define CF_CNT_UNKNOWN          MAX_U32
 
 typedef struct {
 	float current;
@@ -137,29 +137,42 @@ typedef struct {
 	u32 set_gain_st_t_ms;
 }gain_par_t;
 
-#define BL0906_RX_LEN              4
+#define BL0906_RX_LEN                4
 
-#define BL0906_READ_TIMEOUT        100  // milliseconds
-#define BL0906_BUF_CMD_SIZE        16
-#define POWER_MEASURE_INTERVAL     TIMER_5S
+#define BL0906_READ_TIMEOUT          100  // milliseconds
+#define BL0906_BUF_CMD_SIZE          16
+#define POWER_MEASURE_INTERVAL       TIMER_5S
+
+#define BL0906_CURRENT_OFFSET_MAX    10   // mA
+
+#define BL0906_CALIB_EN              0
 
 
-typedef void (*typeBl0906_handle_update_energy)(m_type_enum type, float value);
+enum {
+	BL0906_NORMAL_MODE,
+	BL0906_CALIBRATION_MODE,
+};
+typedef u8 BL0906_Operation_Mode_Enum;
+
+typedef void (*typeBl0906_handle_update_energy)(u8 idx, m_type_enum type, float value);
+typedef void (*typeBl0906_handle_cf_cnt_scale_overflow)(u8 index);
+
+typedef void (*typeBl0906_force_control_relay)(u8 idx, u8 st);
 
 /******************************************************************************/
 /*                             EXPORT FUNCTIONS                               */
 /******************************************************************************/
-void bl0906_init(typeBl0906_handle_update_energy func);
+void bl0906_go_to_calip_mode(void);
+BL0906_Operation_Mode_Enum bl0906_get_mode(void);
+void bl0906_force_control_relay_callback_init(typeBl0906_force_control_relay func);
+void bl0906_init(
+			typeBl0906_handle_update_energy func,
+			typeBl0906_handle_cf_cnt_scale_overflow func_1
+		);
 void bl0906_proc(void);
 bool bl0906_is_correction_complete(void);
 void bl0906_handle_serial_rx_message(u8* buff, u8 len);
-void bl0906_send_get_current(void);
-void bl0906_get_voltage(void);
-void bl0906_get_active_power(void);
-void bl0906_get_active_energy(void);
-void bl0906_get_power_factor(void);
-void bl0906_get_temperature(void);
 
-void bl0906_measurenment_start(u16 m_mask);
+void bl0906_measurenment_start(u8 idx, u16 m_mask);
 
 #endif /* BL0906_H_ */

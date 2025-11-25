@@ -55,6 +55,8 @@ extern "C" {
 #define LIGHT_AUTO_TRANS_VENDOR_ENABLE        1
 #define GATEWAY_UNICAST_ADDR                  0x0001
 
+#define CALIB_GATEWAY_UNICAST_ADDR            0x7FFE
+
 // To reduce the time to join the network
 #define ENABLE_AUTO_BIND_BEFORE_ADD_APPKEY    1
 
@@ -89,6 +91,8 @@ extern "C" {
 #define DEBUG_INFO_ENABLE                     1
 
 #define UART_SIM_INFO_TX_PIN                  GPIO_PA2
+
+#define MAP_INPUT_OUTPUT_EN                   0
 
 
 // Option Button
@@ -163,7 +167,7 @@ extern "C" {
 #endif
 
 
-#define MY_PRINTF_DEBUG_EN      1
+#define MY_PRINTF_DEBUG_EN      0
 #define MY_PRINTF_DEBUG_PIN     GPIO_PD7
 
 #ifndef HCI_LOG_FW_EN

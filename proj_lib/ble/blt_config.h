@@ -207,9 +207,11 @@ typedef struct {
 #define			FLASH_ADR_MD_TIME_SCHEDULE	0x34000
 #define			FLASH_ADR_MD_LIGHTNESS		0x35000	// share with power level
 #define			FLASH_ADR_MD_LIGHT_CTL		0x36000
-#define			FLASH_ADR_MD_LIGHT_LC		0x37000
+// #define		FLASH_ADR_MD_LIGHT_LC		0x37000
 #define			FLASH_ADR_SW_LEVEL			0x38000
-#define 		FLASH_ADR_MD_SENSOR		    0x39000
+
+// #define 		FLASH_ADR_MD_SENSOR		    0x39000
+
 #define 		FLASH_ADR_PROVISION_CFG_S	0x3a000
 #define			FLASH_ADR_MD_LIGHT_HSL		0x3b000 // cps before V23
 #define			FLASH_ADR_FRIEND_SHIP		0x3c000 // backup both FLASH_ADR_MISC and FLASH_ADR_VC_NODE_INFO(gateway) temporarily
@@ -217,6 +219,8 @@ typedef struct {
 	#if TLV_ENABLE
 #define			FLASH_ADR_RESET_CNT			0x35000
 	#else
+#define         FLASH_ADR_CALIB_POWER_VALUE 0x39000
+#define         FLASH_ADR_RELAY_ON_TIME     0x37000
 #define			FLASH_ADR_RESET_CNT			0x3e000
 	#endif
 #if WIN32

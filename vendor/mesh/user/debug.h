@@ -35,7 +35,7 @@
 //	#define TIME_DBG_EN
 //	#define USER_ALI_DBG_EN
 //	#define USER_PROC_DBG_EN
-    #define VENDOR_MODEL_DBG_EN
+   #define VENDOR_MODEL_DBG_EN
 //	#define BLE_LL_OTA_DBG_EN
 //	#define BLT_LED_DBG_EN
 //	#define BLT_SOFT_TIMER_DBG_EN
@@ -82,7 +82,7 @@
 //#define SW_DBG_EN
 //#define INFO_DBG_EN
   #define BL0906_DBG_EN
-//#define ENERGY_DBG_EN
+  #define ENERGY_DBG_EN
 #endif
 
 #define DBG_FLOAT_EN   0

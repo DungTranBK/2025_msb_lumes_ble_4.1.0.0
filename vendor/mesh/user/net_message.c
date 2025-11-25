@@ -23,6 +23,7 @@
 #include "execution_scene.h"
 #include "sw_auto.h"
 #include "dimming.h"
+#include "energy.h"
 #include "button.h"
 
 #include "net_message.h"
@@ -124,6 +125,19 @@ u8 state_of_group_binding[NUMBER_INPUT] =
 	#endif
 	#if ELE_CNT > 5
 		SUB_UNKNOWN,
+	#endif
+};
+
+
+bool relay_control_first_time_flag[NUMBER_RL] =
+{
+		true,
+	#if NUMBER_RL > 1
+		true,
+	#endif
+
+	#if NUMBER_RL > 2
+		true,
 	#endif
 };
 
@@ -404,6 +418,11 @@ int net_message_handle_state_change(u8 idx, u8 status)
 			{
 				light_publish_status_delay(model_idx, 0);
 			}
+			// if(relay_control_first_time_flag[idx] == false)
+			{
+				energy_handle_relay_state_change(idx, status, true);
+			}
+			relay_control_first_time_flag[idx] = false;
 		}
 		else {
 			DBG_NET_MSG_SEND_STR("\n 3");
@@ -415,6 +434,7 @@ int net_message_handle_state_change(u8 idx, u8 status)
 			{
 				light_publish_status_delay(model_idx, TIMER_5S + (rand()%TIMER_30S));
 			}
+			energy_handle_relay_state_change(idx, status, false);
 			nwk_control_msg_para[model_idx].dst = ele_adr_primary + model_idx;
 		}
 		auto_reset_time_trans(idx, status);

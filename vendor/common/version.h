@@ -35,7 +35,7 @@
 #define VERSION_GET(low, high)      ((low)|(high << 8))
 #define FW_VERSION_TELINK_RELEASE   (VERSION_GET(0x31, 0x30))
 
-#define LM_SUB_VERSION               2
+#define LM_SUB_VERSION               0
 
 #define VER_NUM2CHAR(num)		((((num) >= 0)&&((num) <= 9)) ? ((num) + '0') : ((((num) >= 0x0a)&&((num) <= 0x0f)) ? ((num)-0x0a + 'a') : (num)))
 #define U8_HIGH2CHAR(v_u8)		(VER_NUM2CHAR(((v_u8) >> 4) & 0x0f))
@@ -132,9 +132,9 @@
 #define PID_SPIRIT_LPN          	(0x0401)
 
 // One Wire
-#define PID_LM_ONE_WIRE_SW1_SN2     (0x08B1)
-#define PID_LM_ONE_WIRE_SW2_SN2     (0x08B2)
-#define PID_LM_ONE_WIRE_SW3_SN2     (0x08B3)
+#define PID_LM_ONE_WIRE_SW1_SN2     (0x08B5)
+#define PID_LM_ONE_WIRE_SW2_SN2     (0x08B6)
+#define PID_LM_ONE_WIRE_SW3_SN2     (0x08B7)
 
 /*
 MESH_PID_SEL : PID is product ID,

@@ -261,14 +261,16 @@ typedef struct {
 /*******vendor define here, from 0x7ffff ~ 0x78000 ...
 vendor use from 0x7ffff to 0x78000 should be better, because telink may use 0x78000,0x79000 later.
 ********************************************/
-#define			FLASH_ADR_VENDOR_START 			    0x78000
-#define 		FLASH_ADR_AUTO_TRANS	            0x78000
-#define 		FLASH_ADR_CUSTOM_RGB_EFFECT         0x79000
-#define 		FLASH_ADR_TEST_LED_PRODUCTION	    0x7A000
-#define 		FLASH_ADR_NODE_INFO_BACKUP		    0x7B000
-#define 		FLASH_ADR_DEFAULT_TRANSITION_TIME	0x7C000
-#define         FLASH_ADR_TEMP_FOLLOW_LIGHTNESS     0x7D000
-#define         FLASH_ADR_PROXIMITY_SETTING         0x7E000
+#define			FLASH_ADR_VENDOR_START 			0x78000
+#define         FLASH_ADR_BLE_SWITCH_CONFIG     0x78000
+#define         FLASH_ADR_DIMMING_CONFIG        0x79000
+#define         FLASH_ADR_LOCK_SCHEDULE         0x7A000
+#define 		FLASH_ADR_EXECUTION_SCENE	    0x7B000
+#define 		FLASH_ADR_LOCK_STATUS	        0x7C000
+#define         FLASH_ADR_BINDING_PARAMS        0x7D000
+#define         FLASH_ADR_RELAY_STATE           0x7E000
+#define         FLASH_ADR_ENERGY                0x7F000
+#define         FLASH_ADR_VENDOR_END            0x80000
 
 #if (MESH_USER_DEFINE_MODE == MESH_MI_ENABLE)
 #define 		FLASH_ADR_MI_RECORD			0x78000
