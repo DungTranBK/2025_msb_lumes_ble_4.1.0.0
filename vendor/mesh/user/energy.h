@@ -55,7 +55,7 @@ typedef u8 energy_report_type_enum;
 #define IUP_PUBLISH_PERIODIC_DELAY_OFFSET               (115*60)   // 1h55
 #define IUP_PUBLISH_PERIODIC_RANDOM_OFFSET              (5*60)     // 5 minutes
 
-#define ACTIVE_ENERGY_PUBLISH_PERIODIC_DELAY_OFFSET     (55*60)     // 55 minutes
+#define ACTIVE_ENERGY_PUBLISH_PERIODIC_DELAY_OFFSET     (50*60)     // 55 minutes
 #define ACTIVE_ENERGY_PUBLISH_PERIODIC_RANDOM_OFFSET    (5*60)      // 5 minutes
 
 #define MINIMUM_ACTIVE_POWER_MW                         (5*1000)
@@ -77,6 +77,10 @@ enum {
 	RP_SRC_QUERY,
 };
 typedef u8 SourceReport_Enum;
+
+
+#define THRESHOLD_ACTIVE_POWER_SMALL_LOAD_MW       10000 // mW
+#define THRESHOLD_ACTIVE_POWER_VERY_SMALL_LOAD_MW  2500  // mW
 
 /******************************************************************************/
 /*                             EXPORT FUNCTIONS                               */

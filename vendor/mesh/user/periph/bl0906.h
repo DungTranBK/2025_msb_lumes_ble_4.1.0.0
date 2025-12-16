@@ -68,6 +68,9 @@ enum m_type_enum{
 };
 typedef u8 m_type_enum;
 
+#define CURRENT_CORRECTION_EN   0
+
+#define GAIN_I                  16
 #define GAIN_1_DEFAULT_VALUE    0x333300
 
 #define INDEX_UNKNOWN           0xFF
@@ -101,8 +104,8 @@ typedef struct {
     p_func_handle p_func;
 }bl0906_read_cmd_t;
 
-#define BL0906_READ_COMMAND   0x35
-#define BL0906_WRITE_COMMAND  0xCA
+#define BL0906_READ_COMMAND                   0x35
+#define BL0906_WRITE_COMMAND                  0xCA
 
 
 #define CURRENT_CORRECTION_RETRY_INTERVAl_MS  TIMER_500MS
@@ -145,7 +148,13 @@ typedef struct {
 
 #define BL0906_CURRENT_OFFSET_MAX    10   // mA
 
+#define BL0906_POWER_MIN             500 // 0.5mW
+
 #define BL0906_CALIB_EN              0
+
+#define EEPROM_ENABLE                1
+
+#define READ_EEPROM_RETRY_TIME       5
 
 
 enum {

@@ -38,6 +38,9 @@ typedef void (*typeFact_handleExitfactMode)(void);
 typedef uint8_t (*typeFact_restoreResetCnt)(void);
 typedef void (*typeFact_storeResetCnt)(uint8_t);
 
+extern bool i2c_is_pass;
+extern bool calib_is_pass;
+
 /******************************************************************************/
 /*                            EXPORTED FUNCTIONS                              */
 /******************************************************************************/

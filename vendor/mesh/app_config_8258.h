@@ -94,6 +94,8 @@ extern "C" {
 
 #define MAP_INPUT_OUTPUT_EN                   0
 
+#define LED_CALIB_IDX                         0
+
 
 // Option Button
 #if (defined _LM_DOWNLIGHT_) || (defined _LM_RS_) || (defined _POB_LIGHT_) || (defined _LM_DIMMER_)
@@ -167,7 +169,7 @@ extern "C" {
 #endif
 
 
-#define MY_PRINTF_DEBUG_EN      0
+#define MY_PRINTF_DEBUG_EN      1
 #define MY_PRINTF_DEBUG_PIN     GPIO_PD7
 
 #ifndef HCI_LOG_FW_EN

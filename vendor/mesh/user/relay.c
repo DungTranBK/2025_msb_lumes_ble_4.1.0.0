@@ -109,7 +109,7 @@ static relay_active_t  relay_active_st = { \
 static uint32_t onRelayStartTime[NUMBER_RL] = {0};
 static bool     onRelayFlag[NUMBER_RL]      = {false};
 
-static control_pin_t control_pin[NUMBER_RL] = CONTROL_PIN_ARR;
+static u16 control_pin[NUMBER_RL] = CONTROL_PIN_ARR;
 static store_relay_st_delay_t store_relay_st_delay = {.enable = false};
 
 typedef struct {
@@ -139,6 +139,8 @@ static int flash_relay_on_time_idx = FLASH_INDEX_DEFAULT;
 
 #define CHECK_RELAY_ON_TIME_INTERVAL_MS         TIMER_1Min
 #define STORE_TOTAL_RELAY_ON_TIME_INTERVAL_MS   TIMER_30Min
+
+static bool relay_power_on_control[NUMBER_RL];
 
 /******************************************************************************/
 /*                        PRIVATE FUNCTIONS DECLERATION                       */
@@ -408,7 +410,7 @@ static void relay_setup_store_state_delay(void)
  */
 static void relay_normal_on(u8 idx)
 {
-	gpio_write(control_pin[idx].pin_on, RL_ON);
+	gpio_write(control_pin[idx], RL_ON);
 }
 
 /**
@@ -419,7 +421,7 @@ static void relay_normal_on(u8 idx)
  */
 static void relay_normal_off(u8 idx)
 {
-	gpio_write(control_pin[idx].pin_on, RL_OFF);
+	gpio_write(control_pin[idx], RL_OFF);
 }
 
 /**
@@ -572,17 +574,13 @@ void relay_init(void)
 {
 	foreach(i, NUMBER_RL) {
 		// Pin on
-		gpio_set_func(control_pin[i].pin_on, AS_GPIO);
-		gpio_set_output_en(control_pin[i].pin_on, 1);
-		gpio_set_input_en(control_pin[i].pin_on, 0);
-		gpio_write(control_pin[i].pin_on, RL_OFF);
-		// Pin off
-		gpio_set_func(control_pin[i].pin_off, AS_GPIO);
-		gpio_set_output_en(control_pin[i].pin_off, 1);
-		gpio_set_input_en(control_pin[i].pin_off, 0);
-		gpio_write(control_pin[i].pin_off, RL_OFF);
+		gpio_set_func(control_pin[i], AS_GPIO);
+		gpio_set_output_en(control_pin[i], 1);
+		gpio_set_input_en(control_pin[i], 0);
+		gpio_write(control_pin[i], RL_OFF);
 		// Variable
 		relay_para.src_control[i] = SRC_DEVICE;
+		relay_power_on_control[i] = true;
 	}
 	relay_restore_target_state();
 #if !CACULATOR_FREQ_EN
@@ -674,6 +672,25 @@ void relay_check_auto_off(void)
 }
 
 /**
+ * @func    relay_check_publish_relay_on_time
+ * @brief
+ * @param
+ * @retval  None
+ */
+static void relay_check_publish_relay_on_time(u8 idx)
+{
+	if(idx < NUMBER_RL) {
+		if(clock_time_exceed_s(
+				relay_on_time_par.response_last_t_s[idx], relay_on_time_par.interval_t_s[idx])) {
+			relay_on_time_par.interval_t_s[idx] =  \
+					RELAY_ON_TIME_PUBLISH_TIME_S + rand()%RELAY_ON_TIME_PUBLISH_RANDOM_TIME_S;
+			relay_on_time_par.response_last_t_s[idx] = clock_time_s();
+			relay_response_total_relay_on_time(idx);
+		}
+	}
+}
+
+/**
  * @func    relay_calculator_on_time_proc
  * @brief
  * @param
@@ -699,15 +716,13 @@ static void relay_on_time_proc(void)
 					DBG_RELAY_SEND_INT(i);
 					DBG_RELAY_SEND_STR(", ");
 					DBG_RELAY_SEND_DWORD(relay_on_time_par.total_seconds[i]);
+					// Check publish
+					relay_check_publish_relay_on_time(i);
 				}
 			}
-			// Check publish
-			if(clock_time_exceed_s(
-					relay_on_time_par.response_last_t_s[i], relay_on_time_par.interval_t_s[i])) {
-				relay_on_time_par.response_last_t_s[i] =  \
-						RELAY_ON_TIME_PUBLISH_TIME_S + rand()%RELAY_ON_TIME_PUBLISH_RANDOM_TIME_S;
-				relay_on_time_par.response_last_t_s[i] = clock_time_s();
-				relay_response_total_relay_on_time(i);
+			else {
+				// Check publish
+				relay_check_publish_relay_on_time(i);
 			}
 		}
 	}
@@ -722,10 +737,14 @@ static void relay_on_time_proc(void)
 u8 relay_proc(void)
 {
 	relay_on_time_proc();
+
+#if CURRENT_CORRECTION_EN
 	// Check bl0906 busy
 	if(bl0906_is_correction_complete() == false) {
 		return RELAY_IDLE;
 	}
+#endif
+
 	// map state control
 	relay_map_set_and_target_status();
 	// Store delay
@@ -764,16 +783,19 @@ u8 relay_proc(void)
 						relay_on_time_par.check_start_t_ms[idx]  = tick_ms;
 					}
 					if(relay_active_st.state == G_OFF) {
-						relay_on_time_par.total_seconds[idx] += (tick_ms - relay_on_time_par.check_start_t_ms[idx])/1000;
-						CycleFunc_add(relay_store_total_relay_on_time_delay, TIMER_5S);
-						DBG_RELAY_SEND_STR("\n 1_Update relay ON time: ");
-						DBG_RELAY_SEND_INT(idx);
-						DBG_RELAY_SEND_STR(", ");
-						DBG_RELAY_SEND_DWORD(relay_on_time_par.total_seconds[idx]);
+						if(relay_power_on_control[idx] == false) {
+							relay_on_time_par.total_seconds[idx] += (tick_ms - relay_on_time_par.check_start_t_ms[idx])/1000;
+							CycleFunc_add(relay_store_total_relay_on_time_delay, TIMER_5S);
+							DBG_RELAY_SEND_STR("\n 1_Update relay ON time: ");
+							DBG_RELAY_SEND_INT(idx);
+							DBG_RELAY_SEND_STR(", ");
+							DBG_RELAY_SEND_DWORD(relay_on_time_par.total_seconds[idx]);
+						}
 					}
 					else {
 						relay_on_time_par.check_start_t_ms[idx] = clock_time_ms();
 					}
+					relay_power_on_control[idx] = false;
 					relay_para.RLS_ACTUAL &= BACKUP_MASK_RL;
 				}
 			}

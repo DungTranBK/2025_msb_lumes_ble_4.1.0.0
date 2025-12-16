@@ -277,6 +277,14 @@ void button_handle_scene_btn_state(u8 idx, u8 evt)
 			break;
 		}
 
+		case PRESS_TEN_TIME:
+			if(idx == (BUTTON_SCENE_1_IDX - ELE_SCENE_OFFSET))
+			{
+				execution_set_up_auto_send();
+				led_scene_push_blink_led_cmd_with_interval_to_fifo(1 << idx, 2, TIMER_200MS);
+			}
+			break;
+
 		case HOLD_2S:
 		{
 			if(is_lock == false)
@@ -390,16 +398,6 @@ void button_handle_relay_btn_state(u8 idx, u8 evt)
 			if(inter_idx == (BUTTON_SWITCH_0_IDX - ELE_RELAY_OFFSET))
 			{
 				sw_config_enable_auto_send();
-				led_blink_color(1 << inter_idx,
-							LED_COLOR_BLUE,
-							2,
-							LAST_STATE_REFRESH_LED,
-							TIMER_200MS
-						);
-			}
-			else if(inter_idx == (BUTTON_SWITCH_1_IDX - ELE_RELAY_OFFSET))
-			{
-				execution_set_up_auto_send();
 				led_blink_color(1 << inter_idx,
 							LED_COLOR_BLUE,
 							2,

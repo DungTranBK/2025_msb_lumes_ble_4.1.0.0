@@ -3340,9 +3340,16 @@ void mesh_ota_proc()
 #endif
 }
 
+typedef struct {
+	u16 cid;
+	u16 pid;
+	u16 vid;
+}mod_fw_id_t;
+
 //---------
 int mesh_cmd_sig_fw_update_info_get(u8 *par, int par_len, mesh_cb_fun_par_t *cb_par)
 {
+	/*
     fw_update_info_get_t *p_get = (fw_update_info_get_t *)par;
 	model_g_light_s_t *p_model = (model_g_light_s_t *)cb_par->model;
 	fw_update_info_status_t rsp = {0};
@@ -3358,8 +3365,13 @@ int mesh_cmd_sig_fw_update_info_get(u8 *par, int par_len, mesh_cb_fun_par_t *cb_
         // Tell client there is no any more firmware entry by setting list count to be 1 and no firmware entry.
         len_rsp = OFFSETOF(fw_update_info_status_t, fw_id_len);
     }
-	
-	return mesh_tx_cmd_rsp(FW_UPDATE_INFO_STATUS, (u8 *)&rsp, len_rsp, p_model->com.ele_adr, cb_par->adr_src, 0, 0);
+    return mesh_tx_cmd_rsp(FW_UPDATE_INFO_STATUS, (u8 *)&rsp, len_rsp, p_model->com.ele_adr, cb_par->adr_src, 0, 0);
+    */
+    mod_fw_id_t rsp;
+    rsp.cid = VENDOR_ID;
+	rsp.pid = fw_id_local.pid;
+	rsp.vid = fw_id_local.vid;
+	return mesh_tx_cmd_rsp(FW_UPDATE_INFO_STATUS, (u8 *)&rsp, sizeof(mod_fw_id_t), ele_adr_primary, cb_par->adr_src, 0, 0);
 }
 
 int mesh_cmd_sig_fw_update_info_status(u8 *par, int par_len, mesh_cb_fun_par_t *cb_par)

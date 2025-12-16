@@ -759,51 +759,15 @@ int cb_vd_dev_opt_get(u8 *par, int par_len, mesh_cb_fun_par_t *cb_par){
  */
 int vd_light_state_st_rsp(mesh_cb_fun_par_t *cb_par)
 {
-	if(cb_par->model_idx < LIGHT_CNT) {
-		model_client_common_t *p_model = (model_client_common_t *)(cb_par->model);
+	if(cb_par->model_idx < LIGHT_CNT  \
+			&& cb_par->model_idx >= ELE_RELAY_OFFSET) {
 		if(cb_par->adr_dst < ADR_GROUP_START_POINT) {
-			light_state_st_t rsp;
-			rsp.pid = MESH_PID_SEL;
-			mesh_cmd_g_level_st_t level_st;
-			light_g_level_get((u8 *)&level_st, cb_par->model_idx, ST_TRANS_LIGHTNESS);
-			#if LIGHT_TYPE_CT_EN
-			rsp.f_ctt = 0;
-			#endif
-            #if MD_LEVEL_EN
-			if(pv_handle_get_level != NULL) {
-				rsp.state = cb_par->model_idx;
-			}
-			#else
-			rsp.state = get_onoff_from_level(level_st.present_level);
-			#endif
-			rsp.lightness = s16_to_u16(light_res_sw[cb_par->model_idx].trans[ST_TRANS_LIGHTNESS].present);
-			#if LIGHT_TYPE_CT_EN
-			rsp.temp = s16_to_u16(light_res_sw[cb_par->model_idx].trans[ST_TRANS_CTL_TEMP].present);
-			#else
-			rsp.temp = 0;
-			#endif
-			#if LIGHT_TYPE_HSL_EN
-			rsp.hue = s16_to_u16(light_res_sw[cb_par->model_idx].trans[ST_TRANS_HSL_HUE].present);
-			rsp.sat = s16_to_u16(light_res_sw[cb_par->model_idx].trans[ST_TRANS_HSL_SAT].present);
-			#else
-			rsp.hue = 0;
-			rsp.sat = 0;
-			#endif
-			rsp.action = 0;
-			return mesh_tx_cmd_rsp(
-							VD_LIGHT_STATE_STATUS,
-							(u8 *)&rsp,
-							sizeof(rsp),
-							p_model->com.ele_adr,
-							cb_par->adr_src,
-							0,
-							0
-						);
+			// Response Random 0 - 30s
+			light_publish_status_delay(cb_par->model_idx, rand() % TIMER_1S);
+
 		}else{
 			// Response Random 0 - 30s
-			light_publish_status_delay(
-					cb_par->model_idx, rand() % 30000
-				);
+			light_publish_status_delay(cb_par->model_idx, rand() % 30000);
 		}
 	}
 	return -1;
@@ -817,10 +781,8 @@ int vd_light_state_st_rsp(mesh_cb_fun_par_t *cb_par)
 int cb_vd_light_state_get(u8 *par, int par_len, mesh_cb_fun_par_t *cb_par)
 {
 	int err = 0;
-	if(cb_par->model_idx == 0) {
-		if(cb_par->model) {
-			err = vd_light_state_st_rsp(cb_par);
-		}
+	if(cb_par->model) {
+		err = vd_light_state_st_rsp(cb_par);
 	}
 	return err;
 }

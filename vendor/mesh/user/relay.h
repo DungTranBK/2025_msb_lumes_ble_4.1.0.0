@@ -37,42 +37,30 @@ typedef u8 Relay_Type_Enum;
 #if   NUMBER_RL == 1
     // RL0
 	#define PIN_ON_RL0     PIN_CONTROL_RL0_ON
-	#define PIN_OFF_RL0    PIN_CONTROL_RL0_OFF
 #elif NUMBER_RL == 2
     // RL0
 	#define PIN_ON_RL0     PIN_CONTROL_RL0_ON
-	#define PIN_OFF_RL0    PIN_CONTROL_RL0_OFF
     // RL1
 	#define PIN_ON_RL1     PIN_CONTROL_RL1_ON
-	#define PIN_OFF_RL1    PIN_CONTROL_RL1_OFF
 #elif NUMBER_RL == 3
     // RL0
 	#define PIN_ON_RL0     PIN_CONTROL_RL0_ON
-	#define PIN_OFF_RL0    PIN_CONTROL_RL0_OFF
     // RL1
 	#define PIN_ON_RL1     PIN_CONTROL_RL1_ON
-	#define PIN_OFF_RL1    PIN_CONTROL_RL1_OFF
     // RL2
 	#define PIN_ON_RL2     PIN_CONTROL_RL2_ON
-	#define PIN_OFF_RL2    PIN_CONTROL_RL2_OFF
 #endif
 
 
 #if   NUMBER_RL == 1
-	#define CONTROL_PIN_ARR {  \
-			    { PIN_ON_RL0, PIN_OFF_RL0 }, \
-		    };
+	#define CONTROL_PIN_ARR { PIN_ON_RL0 }
+
 #elif NUMBER_RL == 2
-	#define CONTROL_PIN_ARR {  \
-			    { PIN_ON_RL0, PIN_OFF_RL0 }, \
-			    { PIN_ON_RL1, PIN_OFF_RL1 }, \
-		    };
+	#define CONTROL_PIN_ARR { PIN_ON_RL0, PIN_ON_RL1 }
+
 #elif NUMBER_RL == 3
-	#define CONTROL_PIN_ARR {  \
-			    { PIN_ON_RL0, PIN_OFF_RL0 }, \
-			    { PIN_ON_RL1, PIN_OFF_RL1 }, \
-			    { PIN_ON_RL2, PIN_OFF_RL2 }, \
-		    };
+	#define CONTROL_PIN_ARR { PIN_ON_RL0, PIN_ON_RL1, PIN_ON_RL2 }
+
 #endif
 
 

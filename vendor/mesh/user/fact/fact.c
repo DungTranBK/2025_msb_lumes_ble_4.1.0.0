@@ -18,7 +18,7 @@
 #include "vendor/mesh/user/led.h"
 #include "vendor/mesh/user/flash_user.h"
 #include "fact_handle.h"
-//#include "vendor/mesh/user/relay.h"
+#include "../led_scene.h"
 #include "fact.h"
 
 #include "vendor/mesh/user/debug.h"
@@ -121,6 +121,9 @@ enum {
 
 static result_par_t  result_par;
 
+
+bool i2c_is_pass = false;
+bool calib_is_pass = false;
 
 static int reset_cnt_flash_idx     = FLASH_INDEX_DEFAULT;
 #define FLASH_SIZE_RESET_CNT       4000
@@ -409,11 +412,24 @@ static void fact_show_led_result(void)
 				led_cmd.lastState = LAST_STATE_COLOR_NONE;
         	}
         }
+        // Led scene
+        if(i2c_is_pass == false) {
+        	led_scene_on(0);
+        }
+        if(calib_is_pass == false) {
+        	led_scene_on(1);
+        }
     }
     else {
     	led_cmd.ledMode = LED_MODE_OFF;
+        // Led scene
+        if(i2c_is_pass == false) {
+        	led_scene_on(0);
+        }
+        if(calib_is_pass == false) {
+        	led_scene_on(1);
+        }
     }
-
     (void)led_push_led_command_to_fifo(&led_cmd);
 }
 

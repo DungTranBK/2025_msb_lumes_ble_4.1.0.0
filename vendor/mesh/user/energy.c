@@ -46,9 +46,9 @@ typeEnergy_get_actual_relay_state pvEnergy_get_actual_relay_state = NULL;
 /******************************************************************************/
 /*                              PRIVATE DATA                                  */
 /******************************************************************************/
-#define PERCENT_CURRENT_NEED_REPORT      (20)
+#define PERCENT_CURRENT_NEED_REPORT      (30)
 #define PERCENT_VOLTAGE_NEED_REPORT      (10)
-#define PERCENT_POWER_NEED_REPORT        (20)
+#define PERCENT_POWER_NEED_REPORT        (30)
 
 #define TIME_SCAN_MEASURE                (2*1000)    // 5s
 #define MIN_TIME_UPDATE_WH               (30*1000)   // 30s
@@ -227,10 +227,12 @@ static void energy_handle_measurement_complete(u8 idx, m_type_enum m_type, float
 	if(idx >= NUMBER_RL) {
 		return;
 	}
+#if CURRENT_CORRECTION_EN
 	u8 actual_st = G_ON;
 	if(pvEnergy_get_actual_relay_state != NULL) {
 		actual_st = pvEnergy_get_actual_relay_state(idx);
 	}
+#endif
 
 	switch(m_type)
 	{
@@ -239,13 +241,18 @@ static void energy_handle_measurement_complete(u8 idx, m_type_enum m_type, float
 			energy_updated_flag[idx].i_rms = true;
 			energy_value[idx].i_rms = value;
 
+#if CURRENT_CORRECTION_EN
 			if(actual_st == G_OFF && value < BL0906_CURRENT_OFFSET_MAX) {
+#else
+			if(value <= BL0906_CURRENT_OFFSET_MAX) {
+#endif
 				energy_value[idx].i_rms = 0;
 			}
 
-//			DBG_ENERGY_SEND_STR("\n Irms: ");
-//			//DBG_ENERGY_SEND_FLOAT(energy_value[idx].i_rms);
-//			DBG_ENERGY_SEND_INT((u16)energy_value[idx].i_rms);
+			DBG_ENERGY_SEND_STR("\n Irms: ");
+			DBG_ENERGY_SEND_INT(idx);
+			DBG_ENERGY_SEND_STR(", ");
+			DBG_ENERGY_SEND_INT((u16)energy_value[idx].i_rms);
 			break;
 		}
 		case TYPE_VOLTAGE:
@@ -274,9 +281,15 @@ static void energy_handle_measurement_complete(u8 idx, m_type_enum m_type, float
 		{
 			energy_updated_flag[idx].active_power = true;
 			energy_value[idx].active_power = value;
-//			DBG_ENERGY_SEND_STR("\n active_power: ");
-//			// DBG_ENERGY_SEND_FLOAT(energy_value[idx].active_power);
-//			DBG_ENERGY_SEND_INT(energy_value[idx].active_power);
+			if(energy_value[idx].active_power <= BL0906_POWER_MIN
+					  && energy_value[idx].i_rms == 0) {
+				energy_value[idx].active_power = 0;
+			}
+			DBG_ENERGY_SEND_STR("\n active_power: ");
+			DBG_ENERGY_SEND_INT(idx);
+			DBG_ENERGY_SEND_STR(", ");
+			DBG_ENERGY_SEND_INT(energy_value[idx].active_power);
+
 
 			if(value > active_power_max[idx]) {
 				active_power_max[idx] = value;
@@ -426,7 +439,7 @@ static void energy_calculator_kwh(u8 idx)
 				(energy_value[idx].active_energy - active_energy_offset[idx]);
 		float threshold = energy_get_active_power_threshold(idx);
 
-		DBG_ENERGY_SEND_STR("\n TOTAL - ACT_PW: ");
+		DBG_ENERGY_SEND_STR("\n TOTAL - ACT_ENERGY: ");
 		DBG_ENERGY_SEND_INT(idx);
 		DBG_ENERGY_SEND_STR(", ");
 		DBG_ENERGY_SEND_DWORD(total_active_energy[idx]);
@@ -592,11 +605,36 @@ static bool is_satisfy_percent_change_condition(u8 idx, float delta, float value
  */
 static bool energy_iup_is_need_report_by_delta(u8 idx)
 {
+	u16 percent_current = PERCENT_CURRENT_NEED_REPORT;
+	u16 percent_active_power = PERCENT_POWER_NEED_REPORT;
+	if(energy_value[idx].active_power < THRESHOLD_ACTIVE_POWER_SMALL_LOAD_MW) {
+		if(energy_value[idx].active_power < THRESHOLD_ACTIVE_POWER_VERY_SMALL_LOAD_MW) {
+			percent_current = percent_current*4;
+			percent_active_power = percent_active_power*4;
+		}
+		else {
+			percent_current = percent_current*2;
+			percent_active_power = percent_active_power*2;
+		}
+	}
+
+	DBG_ENERGY_SEND_STR("\n #######################");
+
+	DBG_ENERGY_SEND_STR("\n Percent: ");
+	DBG_ENERGY_SEND_INT(idx);
+	DBG_ENERGY_SEND_STR(" - ");
+	DBG_ENERGY_SEND_INT(percent_current);
+
+	DBG_ENERGY_SEND_STR(", ");
+	DBG_ENERGY_SEND_INT(percent_active_power);
+
+	DBG_ENERGY_SEND_STR("\n #######################");
+
 	if(is_satisfy_percent_change_condition(
 			    idx,
 				abs(energy_reported[idx].i_rms - energy_value[idx].i_rms),
 					energy_reported[idx].i_rms,
-						PERCENT_CURRENT_NEED_REPORT, TYPE_CURRENT)) {
+					percent_current, TYPE_CURRENT)) {
 		DBG_ENERGY_SEND_STR("\n Report current: ");
 		DBG_ENERGY_SEND_INT(energy_reported[idx].i_rms);
 
@@ -620,7 +658,7 @@ static bool energy_iup_is_need_report_by_delta(u8 idx)
 			    idx,
 				abs(energy_reported[idx].active_power - energy_value[idx].active_power),
 					energy_reported[idx].active_power,
-						PERCENT_POWER_NEED_REPORT, TYPE_ACTIVE_POWER)) {
+					percent_active_power, TYPE_ACTIVE_POWER)) {
 
 		DBG_ENERGY_SEND_STR("\n Report Active Power: ");
 		DBG_ENERGY_SEND_INT(energy_reported[idx].active_power);
@@ -793,7 +831,7 @@ static void energy_publish_periodic_proc(void)
 
 		}
 		if(clock_time_exceed_s(   \
-				publish_energy_delay_par[i].update_last_t_s, publish_periodic_par[i].iup_t_len_s)) {
+				publish_energy_delay_par[i].update_last_t_s, publish_periodic_par[i].power_t_len_s)) {
 			energy_setup_publish_energy_delay(i, 0);
 			publish_periodic_par[i].power_t_len_s =  \
 					ACTIVE_ENERGY_PUBLISH_PERIODIC_DELAY_OFFSET + rand()%ACTIVE_ENERGY_PUBLISH_PERIODIC_RANDOM_OFFSET;
@@ -812,9 +850,13 @@ static void energy_publish_periodic_proc(void)
 void energy_proc(void)
 {
     bl0906_proc();
+
+#if CURRENT_CORRECTION_EN
 	if(bl0906_is_correction_complete() == false) {
 		return;
 	}
+#endif
+
     energy_publish_periodic_proc();
     energy_publish_active_energy_delay_proc();
     energy_publish_iup_pf_delay_proc();

@@ -215,15 +215,15 @@
 #define PIN_CONTROL_RL1_ON      GPIO_PA5
 #define BIT_CONTROL_RL1_ON      5
 
-#define PIN_CONTROL_RL1_OFF     GPIO_PD6
-#define BIT_CONTROL_RL1_OFF     6
+#define PIN_CONTROL_RL1_OFF     GPIO_PD5
+#define BIT_CONTROL_RL1_OFF     5
 
 // RL3
 #define PIN_CONTROL_RL2_ON      GPIO_PA4
 #define BIT_CONTROL_RL2_ON      4
 
-#define PIN_CONTROL_RL2_OFF     GPIO_PA1
-#define BIT_CONTROL_RL2_OFF     1
+#define PIN_CONTROL_RL2_OFF     GPIO_PD5
+#define BIT_CONTROL_RL2_OFF     5
 
 /*
  *  Input button

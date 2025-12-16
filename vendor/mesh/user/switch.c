@@ -75,6 +75,7 @@ static void Switch_displayLedInFactMode(void)
 void Switch_handleExitFactMode(void)
 {
 	relay_deinit_after_fact();
+	start_reboot();
 }
 
 /**

@@ -17,6 +17,9 @@
 #include "vendor/mesh/user/utilities.h"
 #include "vendor/mesh/user/fifo.h"
 #include "vendor/common/mesh_common.h"
+#include "../fact/fact.h"
+#include "soft_i2c.h"
+#include "at24c01.h"
 #include "bl0906.h"
 
 #include "../debug.h"
@@ -48,15 +51,15 @@ typeBl0906_force_control_relay pvBl0906_force_control_relay = NULL;
 /*                              PRIVATE DATA                                  */
 /******************************************************************************/
 
-#define K_internal   1 //0.97
+#define K_internal   1
 
 const u16 timeout = 1000;  //Serial timeout[ms]
 const float Vref = (1.097*K_internal);  //[V]
 
 const float Rf = 470*4;
-const float Rv = 1;
+const float Rv = 1.1;
 const float Gain_v = 1;
-const float Gain_i = 1;
+const float Gain_i = GAIN_I;
 const float Rl = 2;  // mOhm
 
 const float cfdiv = 1;
@@ -68,7 +71,6 @@ static bl0906_read_cmd_t cmd_is_running = { .id_register = REG_UNKNOWN };
 static Fifo_t fifo_bl0906_cmd;
 static bl0906_read_cmd_t buffer_bl0906_cmds[BL0906_BUF_CMD_SIZE];
 static measurement_value_t measurement_value;
-
 
 typedef struct {
 	u32 cf_cnt_offset;
@@ -92,7 +94,7 @@ static gain_par_t gain_par = { .value = 0, .set_gain_st_t_ms = 0 };
 
 const u32 cst_ref_load_active_power_mw[NUMBER_RL] = { 40500, 40800, 40800 };
 
-const u32 cst_ref_load_current_ma[NUMBER_RL] = { 185, 186, 186 };
+const u32 cst_ref_load_current_ma[NUMBER_RL] = { 184, 185, 186 };
 const u32 cst_ref_voltage_mv = 220000;
 
 
@@ -132,13 +134,7 @@ typedef struct {
 static calibration_par_t  calibration_par;
 
 
-
-#define K_INTERNAL_MIN                        850
-#define K_INTERNAL_MAX                        1150
-
-#define K_INTERNAL_DEFAULT                    1000
-
-#define THOUSANDTHS_ERROR_DONT_NEED_CALIP     5    // 0.5%
+#define THOUSANDTHS_ERROR_DONT_NEED_CALIP     1    // 0.5%
 #define THOUSANDTHS_ERROR_CANT_CALIP          150  // >= 15%
 
 enum {
@@ -148,17 +144,45 @@ enum {
 };
 typedef u8 Bl0906_Calib_Status_Enum;
 
-static u16 bl0906_calibration_value[NUMBER_RL];
+#endif
 
-static u16 voltage_calibration_value = 996;
 
-static u16 current_calibration_value[NUMBER_RL] = {959, 970, 959};
+#define K_INTERNAL_MIN                        850
+#define K_INTERNAL_MAX                        1150
+
+#define K_INTERNAL_DEFAULT                    1000
+
+enum {
+	CALIP_VOLTAGE,
+	CALIP_CURRENT,
+	CALIP_ACTIVE_POWER,
+	CALIP_UNKNOWN,
+};
+typedef u8 CalibType_Enum;
+
+#define MAX_NUMBER_RL      3
+
+typedef struct {
+	u16 k_u;
+	u16 k_i[MAX_NUMBER_RL];
+	u16 k_p[MAX_NUMBER_RL];
+}calib_val_t;
+
+static calib_val_t calib_val;
+
+typedef struct {
+	bool read_status;
+	bool is_valid;
+}eeprom_calib_t;
+
+
+static eeprom_calib_t eeprom_calib = { .read_status = FAILURE, .is_valid = false };
+
+#define EEPROM_CALIB_REG_ADDRESS      0x00
 
 // Flash
-#define BLOCK_SIZE_CALIP_VALUE    sizeof(bl0906_calibration_value)
+#define BLOCK_SIZE_CALIP_VALUE    sizeof(calib_val_t)
 #define FLASH_SIZE_CALIP_VALUE    (FLASH_SECTOR_SIZE - BLOCK_SIZE_CALIP_VALUE)
-
-#endif
 
 /******************************************************************************/
 /*                             PRIVATE FUNCS                                  */
@@ -176,38 +200,16 @@ static void bl0906_get_active_energy(u8 idx);
 /******************************************************************************/
 
 #if BL0906_CALIB_EN
-
 /**
- * @func    bl0906_store_calib_value
+ * @func    bl0906_store_calib_val_to_eeprom
  * @brief
  * @param
  * @retval  None
  */
-static void bl0906_store_calib_value(void)
+static void bl0906_store_calib_val_to_eeprom(calib_val_t* p)
 {
-	flash_erase_sector(FLASH_ADR_CALIB_POWER_VALUE);
-	flash_write_page (
-			FLASH_ADR_CALIB_POWER_VALUE, BLOCK_SIZE_CALIP_VALUE, (u8*)&bl0906_calibration_value
-		);
-}
-
-/**
- * @func    bl0906_restore_calib_value
- * @brief
- * @param
- * @retval  None
- */
-static void bl0906_restore_calib_value(void)
-{
-	flash_read_page(
-			FLASH_ADR_CALIB_POWER_VALUE, BLOCK_SIZE_CALIP_VALUE, (u8*)&bl0906_calibration_value
-		);
-	foreach(i, NUMBER_RL) {
-		if((bl0906_calibration_value[i] < K_INTERNAL_MIN)  \
-					|| (bl0906_calibration_value[i] > K_INTERNAL_MAX)) {
-			bl0906_calibration_value[i] = K_INTERNAL_DEFAULT;
-		}
-	}
+	DBG_BL0906_SEND_STR("\n ****** STORE CALIB VALUE TO EEPROM");
+	at24c01_write_multi_byte(EEPROM_CALIB_REG_ADDRESS, (u8*)p, sizeof(calib_val_t));
 }
 
 /**
@@ -293,7 +295,6 @@ static Bl0906_Calib_Status_Enum bl0906_calibration_proc(void)
 					DBG_Bl0906_SEND_DWORD(calibration_par.total_active_power[i]);
 					DBG_BL0906_SEND_STR(", ");
 
-
 					calibration_par.average_current[i] =  \
 							calibration_par.total_current[i]/ACTIVE_POWER_SAMPLE_CNT;
 
@@ -319,22 +320,22 @@ static Bl0906_Calib_Status_Enum bl0906_calibration_proc(void)
 						(u32)((temp/cst_ref_load_current_ma[i])*1000);
 
 				if(error_in_thousandths <= THOUSANDTHS_ERROR_DONT_NEED_CALIP) {
-					current_calibration_value[i] = K_INTERNAL_DEFAULT;
+					calib_val.k_i[i] = K_INTERNAL_DEFAULT;
 					continue;
 				}
 				if(error_in_thousandths > THOUSANDTHS_ERROR_CANT_CALIP) {
-					current_calibration_value[i]  = K_INTERNAL_DEFAULT;
+					calib_val.k_i[i]  = K_INTERNAL_DEFAULT;
 					return CALIP_FAILURE;
 				}
 				// Positive Error
-				if(calibration_par.average_active_power[i] > cst_ref_load_current_ma[i]) {
-					current_calibration_value[i]  =  \
+				if(calibration_par.average_current[i] > cst_ref_load_current_ma[i]) {
+					calib_val.k_i[i]  =  \
 							(K_INTERNAL_DEFAULT - error_in_thousandths);
 					continue;
 				}
 				// Negative Error
 				else {
-					current_calibration_value[i]  =  \
+					calib_val.k_i[i]  =  \
 							(K_INTERNAL_DEFAULT + error_in_thousandths);
 				}
 			}
@@ -343,49 +344,47 @@ static Bl0906_Calib_Status_Enum bl0906_calibration_proc(void)
 			foreach(i, NUMBER_RL) {
 				DBG_BL0906_SEND_INT(i);
 				DBG_BL0906_SEND_STR(", ");
-				DBG_BL0906_SEND_INT(current_calibration_value[i]);
+				DBG_BL0906_SEND_INT(calibration_par.average_current[i]);
+				DBG_BL0906_SEND_STR(", ");
+				DBG_BL0906_SEND_INT(calib_val.k_i[i]);
 				DBG_BL0906_SEND_STR(" - ");
 			}
 #endif
 			/*
 			 * Voltage
 			 */
-
 			temp = abs(calibration_par.voltage - cst_ref_voltage_mv);
-
 			u32 error_in_thousandths =  \
 					(u32)((temp/cst_ref_voltage_mv)*1000);
-
 
 			DBG_BL0906_SEND_STR("\n *** VOLTAGE: ");
 			DBG_Bl0906_SEND_DWORD((u32)calibration_par.voltage);
 
 			if(error_in_thousandths <= THOUSANDTHS_ERROR_DONT_NEED_CALIP) {
-				voltage_calibration_value = K_INTERNAL_DEFAULT;
+				calib_val.k_u = K_INTERNAL_DEFAULT;
 			}
 			if(error_in_thousandths > THOUSANDTHS_ERROR_CANT_CALIP) {
-				voltage_calibration_value  = K_INTERNAL_DEFAULT;
+				calib_val.k_u  = K_INTERNAL_DEFAULT;
 				DBG_BL0906_SEND_STR("\n *** CALIB VOLTAGE FAILURE");
 				return CALIP_FAILURE;
 			}
 			// Positive Error
 			if(calibration_par.voltage > cst_ref_voltage_mv) {
-				voltage_calibration_value  =  \
+				calib_val.k_u  =  \
 						(K_INTERNAL_DEFAULT - error_in_thousandths);
 			}
 			// Negative Error
 			else {
-				voltage_calibration_value  =  \
+				calib_val.k_u  =  \
 						(K_INTERNAL_DEFAULT + error_in_thousandths);
 			}
 #ifdef  BL0906_DBG_EN
 			DBG_BL0906_SEND_STR("\n **********************\n Calib_voltage: ");
-			DBG_BL0906_SEND_INT(voltage_calibration_value);
+			DBG_BL0906_SEND_INT(calib_val.k_u);
 #endif
 			/*
 			 *  Active Power
 			 */
-
 			u16 calib_arr[NUMBER_RL];
 			memset((u8*)&calib_arr, 0, sizeof(calib_arr));
 
@@ -417,6 +416,12 @@ static Bl0906_Calib_Status_Enum bl0906_calibration_proc(void)
 				if(calibration_par.average_active_power[i] > cst_ref_load_active_power_mw[i]) {
 					calib_arr[i] =  \
 							(K_INTERNAL_DEFAULT - error_in_thousandths);
+
+
+					calib_arr[i] = cst_ref_load_active_power_mw[i]/calibration_par.average_active_power[i];
+
+
+
 					DBG_BL0906_SEND_STR("\n Positive Error: ");
 					DBG_BL0906_SEND_INT(i);
 					DBG_BL0906_SEND_STR(" - ");
@@ -442,26 +447,26 @@ static Bl0906_Calib_Status_Enum bl0906_calibration_proc(void)
 					return CALIP_FAILURE;
 				}
 			}
+			/*
+			 *  Update calibration value and control relay
+			 */
+			foreach(i, NUMBER_RL) {
+				calib_val.k_p[i] = calib_arr[i];
+			}
 #ifdef  BL0906_DBG_EN
 			DBG_BL0906_SEND_STR("\n **********************\n Calibration success: ");
 			foreach(i, NUMBER_RL) {
 				DBG_BL0906_SEND_INT(i);
 				DBG_BL0906_SEND_STR(", ");
-				DBG_BL0906_SEND_INT(bl0906_calibration_value[i]);
+				DBG_BL0906_SEND_INT(calib_val.k_p[i]);
 			}
 #endif
-			/*
-			 *  Update calibration value and control relay
-			 */
-			foreach(i, NUMBER_RL) {
-				bl0906_calibration_value[i] = calib_arr[i];
-			}
-			bl0906_store_calib_value();
+			// Write to EEPROM
+			bl0906_store_calib_val_to_eeprom(&calib_val);
 			// Turn off all relay after calibration
 			foreach(i, NUMBER_RL) {
 				pvBl0906_force_control_relay(i, G_OFF);
 			}
-
 			return CALIP_SUCCESS;
 		}
 		default: return CALIP_FAILURE;
@@ -511,6 +516,133 @@ void bl0906_force_control_relay_callback_init(typeBl0906_force_control_relay fun
 }
 
 /**
+ * @func    bl0906_check_valid_and_modify_calib_value
+ * @brief
+ * @param
+ * @retval  None
+ */
+static bool bl0906_check_valid_and_modify_calib_value(calib_val_t* p_calib)
+{
+	bool ret = true;
+	// Check valid K_u, K_i, K_p
+	if(p_calib->k_u < K_INTERNAL_MIN || p_calib->k_u > K_INTERNAL_MAX) {
+		p_calib->k_u = K_INTERNAL_DEFAULT;
+		ret = false;
+	}
+	foreach(i, NUMBER_RL) {
+		if(p_calib->k_i[i] < K_INTERNAL_MIN || p_calib->k_i[i] > K_INTERNAL_MAX) {
+			p_calib->k_i[i] = K_INTERNAL_DEFAULT;
+			ret = false;
+		}
+		if(p_calib->k_p[i] < K_INTERNAL_MIN || p_calib->k_p[i] > K_INTERNAL_MAX) {
+			p_calib->k_p[i] = K_INTERNAL_DEFAULT;
+			ret = false;
+		}
+	}
+	return ret;
+}
+
+/**
+ * @func    bl0906_store_calib_value_to_flash
+ * @brief
+ * @param
+ * @retval  None
+ */
+static void bl0906_store_calib_value_to_flash(calib_val_t* p)
+{
+	flash_erase_sector(FLASH_ADR_CALIB_POWER_VALUE);
+	flash_write_page (
+			FLASH_ADR_CALIB_POWER_VALUE, BLOCK_SIZE_CALIP_VALUE, (u8*)p
+		);
+}
+
+/**
+ * @func    bl0906_restore_calib_from_flash
+ * @brief
+ * @param
+ * @retval  None
+ */
+static void bl0906_restore_calib_from_flash(calib_val_t* p)
+{
+	flash_read_page(
+			FLASH_ADR_CALIB_POWER_VALUE, BLOCK_SIZE_CALIP_VALUE, (u8*)p
+		);
+}
+
+/**
+ * @func    bl0906_restore_calib_val_from_eeprom_and_flash
+ * @brief
+ * @param
+ * @retval  None
+ */
+static void bl0906_restore_calib_val_from_eeprom_and_flash(void)
+{
+#if EEPROM_ENABLE
+	at24c01_init();
+	__delay_ms(5);
+
+	memset((u8*)&calib_val, 0xFF, sizeof(calib_val_t));
+	int ret;
+	bool eeprom_err = true;
+	foreach(i, READ_EEPROM_RETRY_TIME) {
+		ret = at24c01_read_multi_byte(EEPROM_CALIB_REG_ADDRESS, (u8*)&calib_val, sizeof(calib_val_t));
+		if(ret == 0) {
+			eeprom_err = false;
+			break;
+		}
+		__delay_ms(10);
+	}
+	calib_val_t flash_calib_val;
+	// Save to internal flash
+	if(eeprom_err == false) {
+		i2c_is_pass = true;
+		eeprom_calib.read_status = SUCCESS;
+		if(bl0906_check_valid_and_modify_calib_value(&calib_val) == true) {
+			DBG_BL0906_SEND_STR("\n Read success, EEPROM CALIB VALUE is valid");
+			eeprom_calib.is_valid = true;
+			calib_is_pass = true;
+
+			// Save to internal flash
+			bl0906_restore_calib_from_flash(&flash_calib_val);
+			if(memcmp(&flash_calib_val, &calib_val, sizeof(calib_val_t)) != 0) {
+				DBG_BL0906_SEND_STR("\n Save calib value from EEPROM to flash");
+				bl0906_store_calib_value_to_flash(&calib_val);
+			}
+		}
+		else {
+			DBG_BL0906_SEND_STR("\n Read success, But EEPROM CALIB VALUE is invalid");
+		}
+	}
+	else {
+		DBG_BL0906_SEND_STR("\n RESTORE CALIB VALUE FROM FLASH");
+		// Read from flash
+		bl0906_restore_calib_from_flash(&calib_val);
+		if(bl0906_check_valid_and_modify_calib_value(&calib_val) == true) {
+			eeprom_calib.is_valid = true;
+		}
+	}
+
+	#ifdef  BL0906_DBG_EN
+	DBG_BL0906_SEND_STR("\n ***\n Restore Calib Value: ");
+	DBG_BL0906_SEND_STR("\n U: ");
+	DBG_BL0906_SEND_INT(calib_val.k_u);
+	DBG_BL0906_SEND_STR("\n I: ");
+	foreach(i, NUMBER_RL) {
+		DBG_BL0906_SEND_INT(calib_val.k_i[i]);
+		DBG_BL0906_SEND_STR(", ");
+	}
+	DBG_BL0906_SEND_STR("\n P: ");
+	foreach(i, NUMBER_RL) {
+		DBG_BL0906_SEND_INT(calib_val.k_p[i]);
+		DBG_BL0906_SEND_STR(", ");
+	}
+	DBG_BL0906_SEND_STR("\n ***\n");
+	#endif
+
+#endif
+}
+
+/**
  * @func    bl0940_init
  * @brief
  * @param
@@ -537,15 +669,18 @@ void bl0906_init(
 		current_correction_par.complete_flag[i] = false;
 		extend_value[i].cf_cnt_offset = CF_CNT_UNKNOWN;
 		extend_value[i].cf_cnt_present = CF_CNT_UNKNOWN;
-#if BL0906_CALIB_EN
-		bl0906_calibration_value[i] = 1000;
-#endif
 	}
+    // Restore
+	bl0906_restore_calib_val_from_eeprom_and_flash();
 
-#if BL0906_CALIB_EN
-	bl0906_restore_calib_value();
-#endif
-
+/*
+	// For test
+	calib_val.k_u = K_INTERNAL_DEFAULT;
+	foreach(i, MAX_NUMBER_RL) {
+		calib_val.k_i[i] = K_INTERNAL_DEFAULT;
+		calib_val.k_p[i] = K_INTERNAL_DEFAULT;
+	}
+	*/
 }
 
 /**
@@ -567,7 +702,10 @@ static u32 array_to_u24(u8* in)
  */
 static void bl0906_update_energy(u8 idx, u8 type, float value)
 {
-	if(bl0906_is_correction_complete() == true) {
+#if CURRENT_CORRECTION_EN
+	if(bl0906_is_correction_complete() == true)
+#endif
+	{
 		if(pvBl0906_handle_update_energy != NULL) {
 			pvBl0906_handle_update_energy(idx, type, value);
 		}
@@ -624,6 +762,7 @@ static void bl0906_bias_correction(u8 addr, float measurements, float correction
 	DBG_Bl0906_SEND_DWORD(value);
 }
 
+#if CURRENT_CORRECTION_EN
 /**
  * @func    bl0906_is_correction_complete
  * @brief
@@ -637,6 +776,7 @@ bool bl0906_is_correction_complete(void)
 	}
 	return false;
 }
+#endif
 
 /**
  * @func    bl0906_handle_current_rsp
@@ -672,13 +812,10 @@ static void bl0906_handle_current_rsp(u8* par, u8 par_len)
 	DBG_BL0906_SEND_STR("\n*************************");
 	DBG_BL0906_SEND_STR("\n __CURRENT__:");
 	DBG_BL0906_SEND_BYTE(index);
-	DBG_BL0906_SEND_STR(", ");
+	DBG_BL0906_SEND_STR(" - ");
 	DBG_BL0906_SEND_INT((u16)measurement_value.current);
-
-#if BL0906_CALIB_EN
 	DBG_BL0906_SEND_STR(", ");
-	DBG_Bl0906_SEND_DWORD((u32)(measurement_value.current*current_calibration_value[index]/1000));
-#endif
+	DBG_BL0906_SEND_INT((u16)measurement_value.current*calib_val.k_i[index]/1000);
 
 #if BL0906_CALIB_EN
 	if(bl0906_operation_mode == BL0906_CALIBRATION_MODE) {
@@ -690,12 +827,11 @@ static void bl0906_handle_current_rsp(u8* par, u8 par_len)
 		}
 	}
 #endif
-
 	if(current_correction_par.step == STEP_CORRECTION_PROCESS) {
 		if(current_correction_par.complete_flag[index] == false) {
 			if(measurement_value.current == 0) {
 				current_correction_par.complete_flag[index] = true;
-				DBG_BL0906_SEND_STR("\n Don't need calip: ");
+				DBG_BL0906_SEND_STR("\n Don't need calib: ");
 				DBG_BL0906_SEND_INT(index);
 			}
 			else {
@@ -706,9 +842,10 @@ static void bl0906_handle_current_rsp(u8* par, u8 par_len)
 			}
 		}
 	}
-	else {
-		//DBG_BL0906_SEND_STR("\n************************* NORMAL");
-	}
+	// Calibration Current
+	measurement_value.current =  \
+			measurement_value.current*calib_val.k_i[index]/1000;
+	// Report
 	bl0906_update_energy(index, TYPE_CURRENT, measurement_value.current);
 }
 
@@ -779,8 +916,6 @@ static void bl0906_handle_voltage_rsp(u8* par, u8 par_len)
 	u32 data = array_to_u24(par);
 	measurement_value.voltage = \
 			(float)data * Vref * (Rf + Rv) / (13162*Rv*Gain_v*1000)*1000;    // mV
-	bl0906_update_energy(0, TYPE_VOLTAGE, measurement_value.voltage);
-
 
 #if BL0906_CALIB_EN
 	if(bl0906_operation_mode == BL0906_CALIBRATION_MODE) {
@@ -795,16 +930,18 @@ static void bl0906_handle_voltage_rsp(u8* par, u8 par_len)
 	}
 #endif
 
-
 	DBG_BL0906_SEND_STR("\n __VOLTAGE__:");
 	DBG_BL0906_SEND_INT((u16)(measurement_value.voltage/1000));
 	DBG_BL0906_SEND_STR(", ");
 	DBG_Bl0906_SEND_FLOAT(measurement_value.voltage);
-
-#if BL0906_CALIB_EN
 	DBG_BL0906_SEND_STR(", ");
-	DBG_Bl0906_SEND_DWORD((u32)(measurement_value.voltage*voltage_calibration_value/1000));
-#endif
+	DBG_Bl0906_SEND_DWORD((u32)(measurement_value.voltage*calib_val.k_u/1000));
+
+	// Calibration voltage
+	measurement_value.voltage =  \
+			measurement_value.voltage*calib_val.k_u/1000;
+	// Report
+	bl0906_update_energy(0, TYPE_VOLTAGE, measurement_value.voltage);
 
 }
 
@@ -841,7 +978,6 @@ static void bl0906_handle_active_power_rsp(u8* par, u8 par_len)
 		measurement_value.active_power =
 			(float)data * Vref * Vref * (Rf + Rv)/(40.4125 * Rl*Rv*Gain_i*1000)*1000;    // Convert from W to mW
 	}
-	bl0906_update_energy(index, TYPE_ACTIVE_POWER, measurement_value.active_power);
 
 #if BL0906_CALIB_EN
 	if(bl0906_operation_mode == BL0906_CALIBRATION_MODE) {
@@ -853,16 +989,18 @@ static void bl0906_handle_active_power_rsp(u8* par, u8 par_len)
 		}
 	}
 #endif
-
 	DBG_BL0906_SEND_STR("\n __ACTIVE_POWER__: ");
 	DBG_BL0906_SEND_INT(index);
 	DBG_BL0906_SEND_STR(" - ");
 	DBG_Bl0906_SEND_DWORD(measurement_value.active_power);
-
-#if BL0906_CALIB_EN
 	DBG_BL0906_SEND_STR(", ");
-	DBG_Bl0906_SEND_DWORD((u32)(measurement_value.active_power*bl0906_calibration_value[index]/1000));
-#endif
+	DBG_Bl0906_SEND_DWORD(measurement_value.active_power*calib_val.k_p[index]/1000);
+
+	// Calibration active power
+	measurement_value.active_power =  \
+			measurement_value.active_power*calib_val.k_p[index]/1000;
+	// Report
+	bl0906_update_energy(index, TYPE_ACTIVE_POWER, measurement_value.active_power);
 }
 
 /**
@@ -891,27 +1029,17 @@ static void bl0906_handle_active_energy_rsp(u8* par, u8 par_len)
 		default:
 			return;
 	}
-
 	if(extend_value[index].cf_cnt_offset == CF_CNT_UNKNOWN) {
 		extend_value[index].cf_cnt_offset = cf_cnt;
-		//DBG_BL0906_SEND_STR("\n Initial CF_CNT_OFFSET");
 	}
 	if(extend_value[index].cf_cnt_present == CF_CNT_UNKNOWN) {
 		extend_value[index].cf_cnt_present = cf_cnt;
-		//DBG_BL0906_SEND_STR("\n Initial CF_CNT_PRESENT");
 	}
 	else {
 		if(cf_cnt < extend_value[index].cf_cnt_present) {
-            /*
-			DBG_BL0906_SEND_STR("\n Handle CF_CNT OVERFLOW: ");
-			DBG_Bl0906_SEND_DWORD(cf_cnt);
-			DBG_BL0906_SEND_STR(", ");
-			DBG_Bl0906_SEND_DWORD(extend_value[index].cf_cnt_present);
-            */
 			extend_value[index].cf_cnt_offset = cf_cnt;
 			if(pvBl0906_handle_cf_cnt_scale_overflow != NULL) {
 				pvBl0906_handle_cf_cnt_scale_overflow(index);
-				//DBG_BL0906_SEND_STR("1");
 			}
 		}
 	}
@@ -919,28 +1047,14 @@ static void bl0906_handle_active_energy_rsp(u8* par, u8 par_len)
 
 	u32 delta_cf_cnt = cf_cnt - extend_value[index].cf_cnt_offset;
 	float k_p = (40.4125*Rl*Rv*Gain_i)/(Vref * Vref * (Rf + Rv));
-	float WH_PER_PULSE = (4194304*0.032768 * Gain_i) / (3600000 * cfdiv  * k_p);
+	float WH_PER_PULSE = (4194304*0.032768) / (3600000 * cfdiv  * k_p);
 
 	measurement_value.active_energy = delta_cf_cnt * WH_PER_PULSE;
-
-#if BL0906_CALIB_EN
-	measurement_value.active_energy = measurement_value.active_energy*bl0906_calibration_value[index]/1000;
-#endif
-
-
+    // Calibration active energy
+	measurement_value.active_energy =  \
+			measurement_value.active_energy*calib_val.k_p[index]/1000;
+    // Report
 	bl0906_update_energy(index, TYPE_ACTIVE_ENERGY, measurement_value.active_energy);
-/*
-	DBG_BL0906_SEND_STR("\n __ACTIVE_ENERGY__:");
-	DBG_Bl0906_SEND_DWORD(cf_cnt);
-	DBG_BL0906_SEND_STR(", ");
-	DBG_BL0906_SEND_INT((u16)measurement_value.active_energy);
-
-	DBG_BL0906_SEND_STR(" - ");
-	DBG_Bl0906_SEND_DWORD(extend_value[index].cf_cnt_offset);
-
-	DBG_BL0906_SEND_STR(", ");
-	DBG_Bl0906_SEND_DWORD(extend_value[index].cf_cnt_present);
-	*/
 }
 
 /**
@@ -1013,6 +1127,7 @@ void bl0906_measurenment_start(u8 idx, u16 m_mask)
 	}
 }
 
+#if CURRENT_CORRECTION_EN
 /**
  * @func    bl0906_current_correction_proc
  * @brief   Note, make sure that all relays are off, otherwise this process may cause errors.
@@ -1022,7 +1137,6 @@ void bl0906_measurenment_start(u8 idx, u16 m_mask)
 static void bl0906_current_correction_proc(void)
 {
 	bool complete = true;
-
 	if(current_correction_par.step == STEP_CORRECTION_IDLE) {
 		return;
 	}
@@ -1064,6 +1178,7 @@ static void bl0906_current_correction_proc(void)
 		}
 	}
 }
+#endif
 
 /**
  * @func    bl0906_set_gain_proc
@@ -1168,7 +1283,10 @@ void bl0906_proc(void)
 	}
 #endif
 
+#if CURRENT_CORRECTION_EN
 	bl0906_current_correction_proc();
+#endif
+
 	bl0906_set_gain_proc();
 	bl0906_fifo_proc();
 }

@@ -67,7 +67,7 @@
 //#define LED_DBG_EN
 //#define BTN_DBG_EN
 //#define BUTTON_DBG_EN
-//#define RELAY_DBG_EN
+#define RELAY_DBG_EN
 //#define NET_MSG_DBG_EN
 //#define REPORT_DBG_EN
 //#define SW_CONFIG_DBG_EN
